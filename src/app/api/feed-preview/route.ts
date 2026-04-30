@@ -1,29 +1,28 @@
-import { NextResponse } from "next/server";
-import { getDb, getPreferences } from "@/lib/db";
+import { NextRequest, NextResponse } from "next/server";
+import { requireAuth, isAuthError } from "@/lib/auth";
+import { getFeedForUser, getFeedPreviewPosts } from "@/lib/pg";
 
-export async function GET() {
-  const db = getDb();
+export async function GET(req: NextRequest) {
+  const auth = await requireAuth(req);
+  if (isAuthError(auth)) return auth;
 
-  const posts = db
-    .prepare(
-      `SELECT uri, author_did, text, score, indexed_at
-       FROM posts ORDER BY score DESC, indexed_at DESC LIMIT 50`
-    )
-    .all() as {
-    uri: string;
-    author_did: string;
-    text: string;
-    score: number;
-    indexed_at: string;
-  }[];
+  const feedId = Number(req.nextUrl.searchParams.get("feedId"));
 
-  const count = db.prepare("SELECT COUNT(*) as n FROM posts").get() as {
-    n: number;
-  };
+  if (!feedId) {
+    return NextResponse.json({ total_stored: 0, posts: [] });
+  }
+
+  const feed = await getFeedForUser(feedId, auth.userId);
+  if (!feed) {
+    return NextResponse.json({ error: "Feed not found" }, { status: 404 });
+  }
+
+  const posts = await getFeedPreviewPosts(feedId, 50);
 
   return NextResponse.json({
-    total_stored: count.n,
-    preferences: getPreferences(),
+    total_stored: posts.length,
+    mechanical_filters: feed.mechanical_filters,
+    semantic_config: feed.semantic_config,
     posts,
   });
 }
