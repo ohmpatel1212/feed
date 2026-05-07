@@ -10,15 +10,35 @@ import { getSecret } from "./secrets";
 // --- Connection Pool ---
 // The pool is lazy-initialised on first query so the DATABASE_URL can come
 // from Secret Manager (no plaintext copy on Cloud Run revisions / .env.local).
+//
+// Cloud Run can't reach Cloud SQL over TCP (instance has an IP allowlist),
+// so when running on Cloud Run we route through the Cloud SQL Auth Proxy
+// Unix socket exposed at /cloudsql/<instance-connection-name>. The
+// CLOUDSQL_CONNECTION_NAME env var + `--add-cloudsql-instances` on the
+// service together make that socket appear in the container.
 
 let _pool: Pool | null = null;
 let _poolInit: Promise<Pool> | null = null;
+
+async function buildConnectionString(): Promise<string> {
+  const tcp = await getSecret("database-url");
+  const instance = process.env.CLOUDSQL_CONNECTION_NAME;
+  if (!instance || !process.env.K_SERVICE) return tcp;
+  // Rewrite host → /cloudsql/<instance> Unix socket.
+  try {
+    const u = new URL(tcp);
+    const dbName = u.pathname.replace(/^\//, "");
+    return `postgres://${u.username}:${encodeURIComponent(u.password)}@/${dbName}?host=/cloudsql/${instance}`;
+  } catch {
+    return tcp;
+  }
+}
 
 export async function getPool(): Promise<Pool> {
   if (_pool) return _pool;
   if (_poolInit) return _poolInit;
   _poolInit = (async () => {
-    const connectionString = await getSecret("database-url");
+    const connectionString = await buildConnectionString();
     const pool = new Pool({
       connectionString,
       max: 20,
