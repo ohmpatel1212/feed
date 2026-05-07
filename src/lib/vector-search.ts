@@ -20,16 +20,15 @@ import { GoogleGenAI } from "@google/genai";
 const { MatchServiceClient } = v1;
 
 // All four IDs come from happy-feed's `prod` config (src/config.ts in that repo).
-// They identify the live index in amir-experimental / us-central1.
-const VERTEX_PROJECT = process.env.VERTEX_PROJECT || "amir-experimental";
-const VERTEX_LOCATION = process.env.VERTEX_LOCATION || "us-central1";
-const VERTEX_INDEX_ENDPOINT_ID =
-  process.env.VERTEX_INDEX_ENDPOINT_ID || "73493556223803392";
+// They identify the live index in amir-experimental / us-central1. These are
+// public resource IDs, not secrets — hardcoded so a fresh clone runs with no
+// env setup.
+const VERTEX_PROJECT = "amir-experimental";
+const VERTEX_LOCATION = "us-central1";
+const VERTEX_INDEX_ENDPOINT_ID = "73493556223803392";
 const VERTEX_INDEX_ENDPOINT_HOST =
-  process.env.VERTEX_INDEX_ENDPOINT_HOST ||
   "538744258.us-central1-446303112556.vdb.vertexai.goog";
-const VERTEX_DEPLOYED_INDEX_ID =
-  process.env.VERTEX_DEPLOYED_INDEX_ID || "happy_feed_deployed";
+const VERTEX_DEPLOYED_INDEX_ID = "happy_feed_deployed";
 
 const EMBEDDING_MODEL = "gemini-embedding-001";
 const EMBEDDING_DIMENSION = 768;
