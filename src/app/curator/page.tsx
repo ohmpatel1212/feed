@@ -110,7 +110,6 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
   const [semanticConfig, setSemanticConfig] = useState<SemanticConfig | null>(null);
   const serverFeedIdRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Save mechanical filters to the server
   async function saveMechanicalFilters(filters: MechanicalFilters) {
@@ -280,14 +279,6 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
   }, [prevCriteriaJson, activeFeedId, reloadFeeds]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-
-  // Auto-grow the chat textarea as the user types.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
-  }, [input]);
 
   async function send(text: string) {
     if (!text.trim() || loading) return;
@@ -770,7 +761,6 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                 }}
               >
                 <textarea
-                  ref={inputRef}
                   className="cur-input"
                   rows={1}
                   value={input}

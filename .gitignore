@@ -33,6 +33,9 @@ yarn-error.log*
 # editor
 .vscode/settings.json
 
+# playwright-cli scratch dir
+.playwright-cli/
+
 # env files (can opt-in for committing if needed)
 .env*
 

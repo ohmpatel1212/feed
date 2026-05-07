@@ -364,7 +364,8 @@
   overflow-y: auto;
   min-height: 42px;
   max-height: 200px;
-  width: 100%;
+  /* Modern Chrome/Safari/Edge: textarea auto-sizes to its content. No JS. */
+  field-sizing: content;
 }
 .cur-input::placeholder{ color: var(--parchment-dim); }
 .cur-input:focus{ border-color: var(--amber); }
