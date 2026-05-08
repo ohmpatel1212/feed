@@ -12,7 +12,7 @@ apps/
                           Search. Service: jetstream-indexer.
 ```
 
-Each app is a self-contained pnpm project — they share no code. Architecture details live in `AGENTS.md`.
+Each app is self-contained — they share no code. Architecture details live in `AGENTS.md`.
 
 ## Setup
 
@@ -39,8 +39,8 @@ npx tsx scripts/setup-postgres.ts
 
 ```bash
 cd apps/web
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 Open <http://localhost:3000>. Sign in with Google, click **Try demo (feed curation)**, chat with the agent.
@@ -49,8 +49,8 @@ Open <http://localhost:3000>. Sign in with Google, click **Try demo (feed curati
 
 ```bash
 cd apps/jetstream-indexer
-pnpm install
-pnpm start    # consumes Bluesky Jetstream, writes to gs://happy-feed-data-timelines
+npm install
+npm start    # consumes Bluesky Jetstream, writes to gs://happy-feed-data-timelines
               # and the prod Vertex index — local dev should normally let the
               # Cloud Run instance handle this.
 ```

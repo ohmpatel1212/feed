@@ -1,4 +1,5 @@
 import { Pool, type PoolClient, type QueryResult } from "pg";
+import { Connector, IpAddressTypes } from "@google-cloud/cloud-sql-connector";
 import type {
   MechanicalFilters,
   SemanticConfig,
@@ -8,39 +9,45 @@ import { searchPosts } from "./vector-search";
 import { getSecret } from "./secrets";
 
 // --- Connection Pool ---
-// The pool is lazy-initialised on first query so the DATABASE_URL can come
-// from Secret Manager (no plaintext copy on Cloud Run revisions / .env.local).
+// We talk to Cloud SQL via @google-cloud/cloud-sql-connector in both local
+// dev and on Cloud Run. The connector authenticates via ADC, fetches an
+// ephemeral cert from the SQL Admin API, and opens a TLS tunnel directly to
+// the instance — no IP allowlist, no `--add-cloudsql-instances` flag, no
+// unix socket. Same code path everywhere.
 //
-// Cloud Run can't reach Cloud SQL over TCP (instance has an IP allowlist),
-// so when running on Cloud Run we route through the Cloud SQL Auth Proxy
-// Unix socket exposed at /cloudsql/<instance-connection-name>. The
-// CLOUDSQL_CONNECTION_NAME env var + `--add-cloudsql-instances` on the
-// service together make that socket appear in the container.
+// We still pull DATABASE_URL from Secret Manager so the password isn't
+// hardcoded; we just parse the connection string and feed user/password/
+// database to the pool, while the connector replaces the network stream.
+
+const INSTANCE_CONNECTION_NAME =
+  process.env.CLOUDSQL_CONNECTION_NAME ??
+  "timelines-492720:us-central1:feed-db";
 
 let _pool: Pool | null = null;
 let _poolInit: Promise<Pool> | null = null;
-
-async function buildConnectionString(): Promise<string> {
-  const tcp = await getSecret("database-url");
-  const instance = process.env.CLOUDSQL_CONNECTION_NAME;
-  if (!instance || !process.env.K_SERVICE) return tcp;
-  // Rewrite host → /cloudsql/<instance> Unix socket.
-  try {
-    const u = new URL(tcp);
-    const dbName = u.pathname.replace(/^\//, "");
-    return `postgres://${u.username}:${encodeURIComponent(u.password)}@/${dbName}?host=/cloudsql/${instance}`;
-  } catch {
-    return tcp;
-  }
-}
+let _connector: Connector | null = null;
 
 export async function getPool(): Promise<Pool> {
   if (_pool) return _pool;
   if (_poolInit) return _poolInit;
-  _poolInit = (async () => {
-    const connectionString = await buildConnectionString();
+  const init = (async () => {
+    const dsn = await getSecret("database-url");
+    const u = new URL(dsn);
+    const user = decodeURIComponent(u.username);
+    const password = decodeURIComponent(u.password);
+    const database = u.pathname.replace(/^\//, "") || "postgres";
+
+    _connector = new Connector();
+    const clientOpts = await _connector.getOptions({
+      instanceConnectionName: INSTANCE_CONNECTION_NAME,
+      ipType: IpAddressTypes.PUBLIC,
+    });
+
     const pool = new Pool({
-      connectionString,
+      ...clientOpts,
+      user,
+      password,
+      database,
       max: 20,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
@@ -51,7 +58,13 @@ export async function getPool(): Promise<Pool> {
     _pool = pool;
     return pool;
   })();
-  return _poolInit;
+  // Cache only successful inits — on rejection, clear so the next call retries.
+  _poolInit = init;
+  init.catch((err) => {
+    console.error("[pg] pool init failed:", err?.code, err?.message ?? err);
+    if (_poolInit === init) _poolInit = null;
+  });
+  return init;
 }
 
 export async function query(

@@ -24,11 +24,5 @@
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@google/genai",
-      "protobufjs"
-    ]
   }
 }

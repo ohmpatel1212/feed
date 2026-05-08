@@ -19,15 +19,15 @@ feed/
 │                               jetstream-indexer.
 ```
 
-Each app is a self-contained pnpm project with its own `package.json` and `pnpm-lock.yaml`. There are no workspace packages — they share no code.
+Each app is self-contained with its own `package.json` and `package-lock.json`. There are no workspace packages — they share no code.
 
 ## Stack at a glance
 
 | Concern | Choice |
 |---|---|
-| Web framework | Next.js 16 (App Router) on Node 22 — `pnpm dev` from `apps/web/` |
-| Worker runtime | Node 22 + tsx — `pnpm start` from `apps/jetstream-indexer/` |
-| Package manager | pnpm 11 (each app has its own lockfile) |
+| Web framework | Next.js 16 (App Router) on Node 22 — `npm run dev` from `apps/web/` |
+| Worker runtime | Node 22 + tsx — `npm start` from `apps/jetstream-indexer/` |
+| Package manager | npm (each app has its own `package-lock.json`) |
 | Database | Cloud SQL Postgres 15 in GCP project `timelines-492720`, instance `feed-db` |
 | Auth | Firebase Auth (Google sign-in). Token verified on the server in `apps/web/src/lib/auth.ts`. No user-managed admin SA key (org policy blocks creation), so prod uses insecure-decode fallback for the demo. |
 | Chat LLM | Anthropic Claude (`claude-sonnet-4`) via `@anthropic-ai/sdk` — `/api/chat`, `/api/import-memory` |
@@ -71,7 +71,7 @@ Auth via your local ADC: `gcloud auth application-default login`. Smoke test for
 
 ```bash
 cd apps/web
-pnpm exec tsx -e "import { searchPosts } from './src/lib/vector-search'; (async () => console.log(await searchPosts({ query: 'climate', k: 3 })))()"
+npx tsx -e "import { searchPosts } from './src/lib/vector-search'; (async () => console.log(await searchPosts({ query: 'climate', k: 3 })))()"
 ```
 
 Should return ~3 hits in 1–2 seconds. If it 403s, set `GOOGLE_CLOUD_QUOTA_PROJECT=timelines-492720`.
@@ -80,7 +80,7 @@ Worker locally:
 
 ```bash
 cd apps/jetstream-indexer
-pnpm start    # writes to gs://happy-feed-data-timelines and the prod Vertex index
+npm start    # writes to gs://happy-feed-data-timelines and the prod Vertex index
 ```
 
 # Jetstream indexer

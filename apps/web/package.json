@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.90.0",
     "@base-ui/react": "^1.4.1",
     "@google-cloud/aiplatform": "^6.7.0",
+    "@google-cloud/cloud-sql-connector": "^1.10.0",
     "@google-cloud/secret-manager": "^6.1.2",
     "@google/genai": "^2.0.0",
     "@paper-design/shaders": "^0.0.76",
@@ -50,17 +51,5 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@firebase/util",
-      "better-sqlite3",
-      "esbuild",
-      "sharp",
-      "unrs-resolver",
-      "@google/genai",
-      "msw",
-      "protobufjs"
-    ]
   }
 }

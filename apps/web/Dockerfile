@@ -2,11 +2,9 @@ FROM node:22-slim AS base
 
 WORKDIR /app
 
-RUN npm install -g pnpm@11.0.8
-
 # Install dependencies
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copy source
 COPY src/ src/
@@ -14,7 +12,7 @@ COPY next.config.ts tsconfig.json postcss.config.mjs eslint.config.mjs ./
 COPY public/ public/
 
 # Build
-RUN pnpm build
+RUN npm run build
 
 # Production
 FROM node:22-slim AS runner
