@@ -1,40 +1,84 @@
 # Ripple Feed
 
-A Bluesky custom-feed curator. Talk to a Claude agent about what you want to read; the resulting feed config is stored in Postgres and used to query a separate vector-search service for matching posts.
+A Bluesky custom-feed curator. Talk to a Claude agent about what you want to read; the resulting feed config is stored in Postgres and used to query Vertex AI Vector Search for matching posts.
 
-This repo is the web app (Next.js 16 + React 19). Architecture details live in `AGENTS.md`.
+This is a monorepo with two services that deploy independently to Cloud Run in `timelines-492720`:
+
+```
+apps/
+├── web/                  Next.js 16 + React 19. Service: feed-web.
+└── jetstream-indexer/    Node 22 worker. Consumes Bluesky Jetstream, embeds
+                          posts via Vertex Gemini, upserts into Vertex Vector
+                          Search. Service: jetstream-indexer.
+```
+
+Each app is a self-contained pnpm project — they share no code. Architecture details live in `AGENTS.md`.
 
 ## Setup
 
 ```bash
-npm install
 gcloud auth application-default login
 ```
 
-That's it — there is no `.env.local`. The two real secrets (`DATABASE_URL`, `ANTHROPIC_API_KEY`) are fetched at runtime from Google Secret Manager in project `timelines-492720` (see `src/lib/secrets.ts`). The Vertex Vector Search resource IDs are hardcoded in `src/lib/vector-search.ts`.
+The two real secrets (`DATABASE_URL`, `ANTHROPIC_API_KEY`) are fetched at runtime from Google Secret Manager in `timelines-492720` (see `apps/web/src/lib/secrets.ts`). All Vertex resource IDs are hardcoded as defaults in code (`apps/web/src/lib/vector-search.ts` and `apps/jetstream-indexer/src/config.ts`), env-overridable.
 
 You need access to `timelines-492720`:
 - `roles/secretmanager.secretAccessor` on `database-url` and `anthropic-api-key`
-- `roles/aiplatform.user` on `amir-experimental` (for the vector index)
+- `roles/aiplatform.user` (for the vector index)
+- `roles/storage.objectAdmin` on `gs://happy-feed-data-timelines` (worker only)
 
 If you'd rather not use Secret Manager, set `DATABASE_URL` and/or `ANTHROPIC_API_KEY` as plain env vars — `getSecret()` checks `process.env` first.
 
-Apply the schema once:
+Apply the Postgres schema once:
 
 ```bash
 npx tsx scripts/setup-postgres.ts
 ```
 
-## Run
+## Run the web app
 
 ```bash
-npm run dev
+cd apps/web
+pnpm install
+pnpm dev
 ```
 
 Open <http://localhost:3000>. Sign in with Google, click **Try demo (feed curation)**, chat with the agent.
 
-## Where posts come from
+## Run the worker
 
-This repo doesn't ingest Bluesky's firehose. The vector index is maintained by [`happy-feed`](file:///Users/amir/code/happy-feed)'s Jetstream worker (running in `amir-experimental`). We call Vertex AI Vector Search directly from `src/lib/vector-search.ts` — no local happy-feed server needed.
+```bash
+cd apps/jetstream-indexer
+pnpm install
+pnpm start    # consumes Bluesky Jetstream, writes to gs://happy-feed-data-timelines
+              # and the prod Vertex index — local dev should normally let the
+              # Cloud Run instance handle this.
+```
 
-See `AGENTS.md` for the full architecture and the list of things this repo intentionally does **not** do.
+## Deploy
+
+Both services deploy from this repo to Cloud Run in `timelines-492720`.
+
+**Web:** source-based deploy from `apps/web/`:
+
+```bash
+cd apps/web
+gcloud run deploy feed-web --source=. --region=us-central1 --project=timelines-492720
+```
+
+**Worker:** Cloud Build → Artifact Registry → Cloud Run:
+
+```bash
+cd apps/jetstream-indexer
+gcloud builds submit --config=cloudbuild.yaml --project=timelines-492720 .
+gcloud run deploy jetstream-indexer \
+  --image=us-central1-docker.pkg.dev/timelines-492720/jetstream-indexer/worker:latest \
+  --region=us-central1 --project=timelines-492720 \
+  --no-cpu-throttling --min-instances=1 --max-instances=1 --concurrency=1 \
+  --memory=1Gi \
+  --service-account=777152549518-compute@developer.gserviceaccount.com
+```
+
+The worker needs `--no-cpu-throttling` (long-lived WebSocket to Jetstream) and `concurrency=1` (single writer to the cursor file).
+
+See `AGENTS.md` for the full architecture, env vars, and the list of things this repo intentionally does **not** do.
