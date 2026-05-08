@@ -81,4 +81,10 @@ gcloud run deploy jetstream-indexer \
 
 The worker needs `--no-cpu-throttling` (long-lived WebSocket to Jetstream) and `concurrency=1` (single writer to the cursor file).
 
+## Monitoring
+
+Cloud Monitoring dashboard for the indexer (flush rate, cursor lag, embed cost, QPS): <https://console.cloud.google.com/monitoring/dashboards/builder/781a3b9f-7c30-4eed-82bd-61fa79964612?project=timelines-492720>
+
+Source JSON lives at `apps/jetstream-indexer/monitoring/dashboard.json` — re-import with `gcloud monitoring dashboards create --config-from-file=...` if it gets blown away.
+
 See `AGENTS.md` for the full architecture, env vars, and the list of things this repo intentionally does **not** do.
