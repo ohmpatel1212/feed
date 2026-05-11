@@ -56,7 +56,15 @@ interface SavedFeed {
 const FEED_COLORS = ["var(--aurora)", "var(--amber)", "var(--ember)", "var(--rose)", "var(--aurora-deep)", "var(--mist)"];
 
 function parseMessage(content: string) {
-  const lines = content.split("\n");
+  // Defensive: strip control lines that may have leaked into older chat
+  // history (FEED_NAME, FEED_CONFIG_JSON, FEED_CRITERIA_JSON, FEED_DONE).
+  const stripped = content
+    .replace(/FEED_NAME:.+\n?/g, "")
+    .replace(/FEED_CONFIG_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+    .replace(/FEED_CRITERIA_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+    .replace(/FEED_DONE\n?/g, "")
+    .trim();
+  const lines = stripped.split("\n");
   const options: { key: string; label: string }[] = [];
   const textLines: string[] = [];
   for (const line of lines) {
@@ -87,7 +95,9 @@ export default function CuratorPage() {
 }
 
 function CuratorApp({ profile }: { profile: UserProfile }) {
-  const [view, setView] = useState<"chat" | "feed">("chat");
+  const [mobileTab, setMobileTab] = useState<"chat" | "feed" | "tune">("chat");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [optionsUnread, setOptionsUnread] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -110,6 +120,8 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
   const [semanticConfig, setSemanticConfig] = useState<SemanticConfig | null>(null);
   const serverFeedIdRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const lastSemanticConfigJsonRef = useRef<string>("");
+  const postsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Save mechanical filters to the server
   async function saveMechanicalFilters(filters: MechanicalFilters) {
@@ -300,12 +312,31 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
         setPrefs(p);
         checkNewFeed(p);
       }
-      // Agent emitted FEED_DONE — the feed is finalized server-side.
-      // Hand off to the post view and refresh the sidebar so the entry loses
-      // its "drafting" badge.
+      // Live settings: the chat agent emits a cumulative FEED_CONFIG_JSON on
+      // every turn. When the resulting semantic_config has changed, push it
+      // into the FilterPanel and debounce-refresh the posts pane.
+      if (d.feed?.semantic_config) {
+        const incomingJson = JSON.stringify(d.feed.semantic_config);
+        if (incomingJson !== lastSemanticConfigJsonRef.current) {
+          lastSemanticConfigJsonRef.current = incomingJson;
+          setSemanticConfig(d.feed.semantic_config);
+          if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
+          postsDebounceRef.current = setTimeout(() => {
+            const fid = serverFeedIdRef.current;
+            if (fid) loadPosts(fid);
+          }, 600);
+        }
+      }
+      // Last assistant turn produced new options the user hasn't seen yet —
+      // flag the Chat tab on mobile if they're elsewhere.
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "assistant" && parseMessage(last.content).options.length > 0) {
+        if (mobileTab !== "chat") setOptionsUnread(true);
+      }
+      // FEED_DONE keeps the feed-finalized indication and refreshes the
+      // sidebar so the entry loses its "drafting" badge.
       if (d.done) {
         const fid = serverFeedIdRef.current;
-        setView("feed");
         if (fid) loadPosts(fid);
         reloadFeeds();
       }
@@ -349,7 +380,9 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setMechanicalFilters(null);
     setSemanticConfig(null);
     setSelectedOptions(new Set());
-    setView("chat");
+    setMobileTab("chat");
+    setSidebarOpen(false);
+    lastSemanticConfigJsonRef.current = "";
     setPrevCriteriaJson("");
 
     // Create a fresh server-side feed.
@@ -386,10 +419,12 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setSelectedOptions(new Set());
     setActiveFeedId(feed.id);
     serverFeedIdRef.current = id;
-    // If the feed is configured (has criteria), open the post view. Otherwise
-    // resume the chat where they left off.
+    lastSemanticConfigJsonRef.current = "";
+    // On mobile, jump to the Feed tab if the feed is already configured,
+    // otherwise to Chat to resume the interview.
     const complete = feedIsComplete(feed);
-    setView(complete ? "feed" : "chat");
+    setMobileTab(complete ? "feed" : "chat");
+    setSidebarOpen(false);
     if (id) {
       loadChat(id);
       if (complete) loadPosts(id);
@@ -410,7 +445,8 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     if (activeFeedId === deleteTarget) {
       setActiveFeedId(null);
       serverFeedIdRef.current = null;
-      setView("chat");
+      setMobileTab("chat");
+      lastSemanticConfigJsonRef.current = "";
     }
     setDeleteTarget(null);
   }
@@ -419,7 +455,8 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setActiveFeedId(importedFeed.id.toString());
     serverFeedIdRef.current = importedFeed.id;
     setShowImportMemory(false);
-    setView("feed");
+    setMobileTab("feed");
+    lastSemanticConfigJsonRef.current = "";
     reloadFeeds();
     loadPosts(importedFeed.id);
   }
@@ -452,8 +489,15 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
 
   return (
     <div className="curator-shell">
+      {sidebarOpen && (
+        <div
+          className="cur-sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden
+        />
+      )}
       {/* SIDEBAR */}
-      <div className="cur-sidebar">
+      <div className={`cur-sidebar${sidebarOpen ? " is-open" : ""}`}>
         <div className="cur-sidebar-head">
           <Link href="/">
             <ShaderLogo height={32} />
@@ -478,7 +522,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                   <div className="fi-sub">
                     {!isComplete
                       ? "drafting · resume chat"
-                      : isActive && view === "feed"
+                      : isActive
                       ? `${postCount} posts · viewing`
                       : `created ${new Date(feed.createdAt).toLocaleDateString()}`}
                   </div>
@@ -612,33 +656,24 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
       </AlertDialog>
 
       {/* MAIN */}
-      <div className="cur-main">
+      <div className="cur-main" data-mobile-tab={mobileTab}>
         <div className="cur-topbar">
+          <button
+            className="cur-topbar-burger"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open feeds menu"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+              <line x1="4" y1="7" x2="20" y2="7" />
+              <line x1="4" y1="12" x2="20" y2="12" />
+              <line x1="4" y1="17" x2="20" y2="17" />
+            </svg>
+          </button>
           <div className="cur-topbar-left">
-            <h2>
-              {view === "chat" ? "Curate a feed" : (activeFeed?.name || "Your Feed")}
-            </h2>
-            {view === "feed" && (
-              <span className="live-badge">live</span>
-            )}
+            <h2>{activeFeed?.name || "Curate a feed"}</h2>
+            {hasCriteria && <span className="live-badge">live</span>}
           </div>
           <div className="cur-topbar-right">
-            {view === "chat" && hasCriteria && (
-              <button
-                onClick={() => setView("feed")}
-                className="cur-topbar-btn filled"
-              >
-                View feed →
-              </button>
-            )}
-            {view === "feed" && (
-              <button
-                onClick={() => setView("chat")}
-                className="cur-topbar-btn ghost"
-              >
-                Edit preferences
-              </button>
-            )}
             <button
               onClick={() => setShowImportMemory(true)}
               className="cur-topbar-icon"
@@ -651,15 +686,14 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
           </div>
         </div>
 
-        {view === "chat" ? (
-          <>
+        <div className="cur-workbench">
+          {/* CHAT PANE */}
+          <div className="cur-chat-pane">
             <div className="cur-chat-area">
               <div className="cur-chat-inner">
                 {messages.map((msg, i) => {
                   const isUser = msg.role === "user";
-                  const isLast = i === messages.length - 1;
                   const parsed = !isUser ? parseMessage(msg.content) : null;
-
                   return (
                     <div key={i} className="cur-msg">
                       {isUser ? (
@@ -669,34 +703,6 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                           {parsed!.text.split("\n\n").map((para, j) => (
                             <p key={j}>{para}</p>
                           ))}
-                          {parsed!.options.length > 0 && (
-                            <div className="cur-options">
-                              {parsed!.options.map((opt) => {
-                                const checked = selectedOptions.has(opt.key);
-                                const interactive = isLast && !loading;
-                                return (
-                                  <button
-                                    key={opt.key}
-                                    type="button"
-                                    className={`cur-opt${checked ? " cur-opt-selected" : ""}`}
-                                    disabled={!interactive}
-                                    onClick={() => {
-                                      if (!interactive) return;
-                                      setSelectedOptions((prev) => {
-                                        const next = new Set(prev);
-                                        if (next.has(opt.key)) next.delete(opt.key);
-                                        else next.add(opt.key);
-                                        return next;
-                                      });
-                                    }}
-                                  >
-                                    <span className="cur-opt-key">{checked ? "✓" : opt.key}</span>
-                                    {opt.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
@@ -711,13 +717,12 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                     onAddVoices={(voices) => {
                       setAddedVoices(voices);
                       setShowVoices(false);
-                      // Send a message about the added voices
                       const names = voices.map(v => v.name).join(", ");
                       send(`Add these voices to my feed: ${names}`);
                     }}
                     onDismiss={() => {
                       setShowVoices(false);
-                      setView("feed");
+                      setMobileTab("feed");
                     }}
                   />
                 )}
@@ -737,6 +742,34 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
             </div>
 
             <div className="cur-input-bar">
+              {lastParsed?.options.length ? (
+                <div className="cur-pinned-options">
+                  {lastParsed.options.map((opt) => {
+                    const checked = selectedOptions.has(opt.key);
+                    const interactive = !loading;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        className={`cur-opt${checked ? " cur-opt-selected" : ""}`}
+                        disabled={!interactive}
+                        onClick={() => {
+                          if (!interactive) return;
+                          setSelectedOptions((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(opt.key)) next.delete(opt.key);
+                            else next.add(opt.key);
+                            return next;
+                          });
+                        }}
+                      >
+                        <span className="cur-opt-key">{checked ? "✓" : opt.key}</span>
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
               {showFinalize && (
                 <div className="cur-finalize-row">
                   <button
@@ -766,7 +799,6 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
-                    // Enter submits; Shift+Enter inserts a newline.
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       if (lastParsed?.options.length) submitChat();
@@ -792,103 +824,139 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                 />
               </form>
             </div>
-          </>
-        ) : (
-          <div className="cur-feed-layout">
-            {/* Posts column */}
-            <div className="cur-feed-posts">
-              <div className="cur-feed-posts-header">
-                <div className="cur-feed-stage">
-                  {postsLoading && (
+          </div>
+
+          {/* POSTS PANE */}
+          <div className="cur-feed-posts">
+            <div className="cur-feed-posts-header">
+              <div className="cur-feed-stage">
+                {postsLoading && (
+                  <>
+                    <span className="pulse-dot" />
+                    <span>
+                      {postsStage === "ranking"
+                        ? "Ranking results…"
+                        : "Searching for posts that match your feed…"}
+                    </span>
+                  </>
+                )}
+              </div>
+              {(() => {
+                const fid = activeFeedId ? parseInt(activeFeedId) || null : null;
+                return (
+                  <button
+                    type="button"
+                    className="cur-refresh"
+                    disabled={postsLoading || !fid}
+                    onClick={() => fid && loadPosts(fid)}
+                    title="Refresh posts"
+                  >
+                    ↻ Refresh
+                  </button>
+                );
+              })()}
+            </div>
+            <div className="cur-feed-posts-inner">
+              {posts.length === 0 ? (
+                <div className="cur-empty">
+                  {postsLoading ? (
+                    <p><span className="pulse-dot" />Loading posts…</p>
+                  ) : (
                     <>
-                      <span className="pulse-dot" />
-                      <span>
-                        {postsStage === "ranking"
-                          ? "Ranking results…"
-                          : "Searching for posts that match your feed…"}
-                      </span>
+                      <p>No posts yet.</p>
+                      <p className="sub">
+                        {!hasCriteria
+                          ? "Posts will appear here as we figure out what you're into."
+                          : "Try Refresh, or refine the feed criteria in the chat."}
+                      </p>
                     </>
                   )}
                 </div>
-                {(() => {
-                  const fid = activeFeedId ? parseInt(activeFeedId) || null : null;
+              ) : (
+                posts.map((post) => {
+                  const bskyUrl = (() => {
+                    const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
+                    return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
+                  })();
                   return (
-                    <button
-                      type="button"
-                      className="cur-refresh"
-                      disabled={postsLoading || !fid}
-                      onClick={() => fid && loadPosts(fid)}
-                      title="Refresh posts"
-                    >
-                      ↻ Refresh
-                    </button>
-                  );
-                })()}
-              </div>
-              <div className="cur-feed-posts-inner">
-                {posts.length === 0 ? (
-                  <div className="cur-empty">
-                    {postsLoading ? (
-                      <p><span className="pulse-dot" />Loading posts…</p>
-                    ) : (
-                      <>
-                        <p>No posts yet.</p>
-                        <p className="sub">
-                          {!semanticConfig
-                            ? "Complete the feed setup first — your preferences are what we search against."
-                            : "Try Refresh, or refine the feed criteria in the chat."}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  posts.map((post) => {
-                    const bskyUrl = (() => {
-                      const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                      return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                    })();
-                    return (
-                      <div key={post.uri} className="cur-post">
-                        <div className="cur-post-head">
-                          <div className="avatar" />
-                          <span className="handle">{post.author_did.slice(0, 24)}...</span>
-                          <span className={`score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}>
-                            {(post.score * 100).toFixed(0)}%
-                          </span>
-                          {bskyUrl && (
-                            <a
-                              href={bskyUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="cur-post-link"
-                              title="Open in Bluesky"
-                              aria-label="Open in Bluesky"
-                            >
-                              ↗
-                            </a>
-                          )}
-                        </div>
-                        <div className="cur-post-body">{post.text}</div>
-                        <div className="cur-post-time">{post.indexed_at}</div>
+                    <div key={post.uri} className="cur-post">
+                      <div className="cur-post-head">
+                        <div className="avatar" />
+                        <span className="handle">{post.author_did.slice(0, 24)}...</span>
+                        <span className={`score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}>
+                          {(post.score * 100).toFixed(0)}%
+                        </span>
+                        {bskyUrl && (
+                          <a
+                            href={bskyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="cur-post-link"
+                            title="Open in Bluesky"
+                            aria-label="Open in Bluesky"
+                          >
+                            ↗
+                          </a>
+                        )}
                       </div>
-                    );
-                  })
-                )}
-              </div>
+                      <div className="cur-post-body">{post.text}</div>
+                      <div className="cur-post-time">{post.indexed_at}</div>
+                    </div>
+                  );
+                })
+              )}
             </div>
-
-            {/* Control tower */}
-            {(mechanicalFilters || semanticConfig) && (
-              <FilterPanel
-                mechanicalFilters={mechanicalFilters || ({} as MechanicalFilters)}
-                semanticConfig={semanticConfig || ({} as SemanticConfig)}
-                onMechanicalChange={saveMechanicalFilters}
-                onSemanticChange={saveSemanticConfig}
-                postCount={postCount}
-              />
-            )}
           </div>
-        )}
+
+          {/* SETTINGS / CONTROL TOWER */}
+          <FilterPanel
+            mechanicalFilters={mechanicalFilters || ({} as MechanicalFilters)}
+            semanticConfig={semanticConfig || ({} as SemanticConfig)}
+            onMechanicalChange={saveMechanicalFilters}
+            onSemanticChange={saveSemanticConfig}
+            postCount={postCount}
+          />
+        </div>
+
+        {/* MOBILE TAB NAV */}
+        <nav className="cur-mobile-tabs" aria-label="View tabs">
+          <button
+            type="button"
+            className={`cur-mobile-tab${mobileTab === "chat" ? " active" : ""}`}
+            onClick={() => { setMobileTab("chat"); setOptionsUnread(false); }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            <span>Chat</span>
+            {optionsUnread && <span className="cur-mobile-tab-dot" aria-hidden />}
+          </button>
+          <button
+            type="button"
+            className={`cur-mobile-tab${mobileTab === "feed" ? " active" : ""}`}
+            onClick={() => setMobileTab("feed")}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+            </svg>
+            <span>Feed</span>
+            {postCount > 0 && <span className="cur-mobile-tab-badge">{postCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={`cur-mobile-tab${mobileTab === "tune" ? " active" : ""}`}
+            onClick={() => setMobileTab("tune")}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span>Tune</span>
+          </button>
+        </nav>
       </div>
 
       {showImportMemory && (

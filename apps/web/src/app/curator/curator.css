@@ -4,13 +4,31 @@
 
 .curator-shell{
   display: flex;
-  height: 100vh;
+  height: 100dvh;
   background: var(--midnight);
   color: var(--cream);
   font-family: var(--rf-body);
   font-weight: 300;
   font-size: 15px;
   line-height: 1.6;
+  position: relative;
+}
+/* Dark, subtle scrollbars throughout the curator. */
+.curator-shell *{
+  scrollbar-width: thin;
+  scrollbar-color: rgba(243,236,221,0.18) transparent;
+}
+.curator-shell *::-webkit-scrollbar{ width: 8px; height: 8px; }
+.curator-shell *::-webkit-scrollbar-track{ background: transparent; }
+.curator-shell *::-webkit-scrollbar-thumb{
+  background: rgba(243,236,221,0.18);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.curator-shell *::-webkit-scrollbar-thumb:hover{
+  background: rgba(243,236,221,0.32);
+  background-clip: padding-box;
 }
 .curator-shell ::selection{ background: var(--ember); color: var(--void); }
 
@@ -212,6 +230,19 @@
 }
 .cur-topbar-icon:hover{ border-color: var(--amber); color: var(--amber);
 }
+.cur-topbar-burger{
+  display: none;
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: transparent;
+  color: var(--parchment);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cur-topbar-burger:hover{ border-color: var(--amber); color: var(--amber); }
 .cur-publish-btn svg{
   opacity: 0.7;
   transition: opacity 0.2s;
@@ -222,7 +253,9 @@
 .cur-chat-area{
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 32px;
+  min-width: 0;
 }
 .cur-chat-inner{
   max-width: 640px;
@@ -243,8 +276,11 @@
   color: var(--parchment);
   line-height: 1.65;
   margin-bottom: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .cur-msg-assistant p em{ color: var(--amber); font-family: var(--rf-display); }
+.cur-msg-user{ overflow-wrap: anywhere; word-break: break-word; }
 
 .cur-options{ display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .cur-opt{
@@ -643,12 +679,24 @@
   letter-spacing: 0.03em;
 }
 
-/* ── FEED TWO-COLUMN LAYOUT ────────────────── */
-.cur-feed-layout{
+/* ── WORKBENCH (chat + posts + settings) ────── */
+.cur-workbench{
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
+.cur-chat-pane{
+  width: 420px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--hair);
+  background: rgba(6,15,11,0.25);
+  min-height: 0;
+}
+.cur-chat-pane .cur-chat-area{ padding: 24px 20px; }
+.cur-chat-pane .cur-input-bar{ padding: 16px 20px; }
 .cur-feed-posts{
   flex: 1;
   overflow-y: auto;
@@ -658,6 +706,84 @@
 .cur-feed-posts-inner{
   max-width: 600px;
   margin: 0 auto;
+}
+
+/* Pinned multi-select chips, anchored above the textarea */
+.cur-pinned-options{
+  max-width: 640px;
+  margin: 0 auto 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cur-pinned-options .cur-opt{ width: 100%; }
+
+/* ── MOBILE TAB NAV ─────────────────────────── */
+.cur-mobile-tabs{
+  display: none;
+  border-top: 1px solid var(--hair);
+  background: rgba(6,15,11,0.92);
+  backdrop-filter: blur(12px);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  gap: 4px;
+}
+.cur-mobile-tab{
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  color: var(--parchment-dim);
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s, background 0.2s;
+}
+.cur-mobile-tab:hover{ color: var(--cream); }
+.cur-mobile-tab.active{
+  color: var(--amber);
+  background: rgba(232,185,136,0.08);
+}
+.cur-mobile-tab svg{ opacity: 0.85; }
+.cur-mobile-tab.active svg{ opacity: 1; }
+.cur-mobile-tab-dot{
+  position: absolute;
+  top: 6px;
+  right: 22%;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--ember);
+  box-shadow: 0 0 6px var(--ember);
+}
+.cur-mobile-tab-badge{
+  position: absolute;
+  top: 4px;
+  right: 16%;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(232,185,136,0.15);
+  color: var(--amber);
+  font-family: var(--rf-mono);
+  font-size: 9px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.cur-sidebar-backdrop{
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 40;
+  backdrop-filter: blur(2px);
 }
 
 /* ── CONTROL TOWER (right sidebar) ──────────── */
@@ -979,3 +1105,51 @@
 }
 .ctrl-textarea::placeholder{ color: var(--parchment-dim); opacity: 0.5; }
 .ctrl-textarea:focus{ border-color: var(--amber); }
+
+/* ── MOBILE (<768px) ─────────────────────────── */
+@media (max-width: 767px){
+  /* Sidebar becomes a slide-in drawer */
+  .cur-sidebar{
+    position: fixed;
+    top: 0; left: 0;
+    height: 100dvh;
+    width: min(82vw, 320px);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease-out;
+    background: var(--midnight);
+  }
+  .cur-sidebar.is-open{ transform: translateX(0); }
+  .cur-sidebar-backdrop{ display: block; }
+  .cur-topbar-burger{ display: inline-flex; }
+
+  /* Slim the topbar */
+  .cur-topbar{ padding: 12px 16px; }
+  .cur-topbar-left h2{ font-size: 20px; }
+
+  /* Main column fills the viewport (sidebar is overlaid, not in-flow) */
+  .cur-main{ width: 100%; }
+
+  /* Workbench shows ONE pane at a time, controlled by data-mobile-tab */
+  .cur-workbench{ flex-direction: column; flex: 1; min-height: 0; }
+  .cur-chat-pane,
+  .cur-feed-posts,
+  .ctrl-tower{ display: none; }
+  .cur-main[data-mobile-tab="chat"] .cur-chat-pane{
+    display: flex; flex: 1; width: 100%; border-right: none;
+  }
+  .cur-main[data-mobile-tab="feed"] .cur-feed-posts{
+    display: block; flex: 1; padding: 16px;
+  }
+  .cur-main[data-mobile-tab="tune"] .ctrl-tower{
+    display: flex; flex: 1; width: 100%; border-left: none;
+  }
+
+  /* Tighten chat pane padding on small screens */
+  .cur-chat-area{ padding: 16px; }
+  .cur-input-bar{ padding: 12px 16px; }
+  .cur-pinned-options{ margin-bottom: 8px; }
+
+  /* Reveal the bottom tab nav */
+  .cur-mobile-tabs{ display: flex; }
+}

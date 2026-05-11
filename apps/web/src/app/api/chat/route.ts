@@ -42,22 +42,20 @@ CONVERSATION FLOW — go deep, not wide:
 3. FIND THE VIBE: Ask what makes a post worth reading vs. scrolling past. This is about tone, not topic. Examples: "Do you want the takes that make you think, or the ones that make you laugh?" / "Shitposts or thinkpieces?" / "Hot takes or deep dives?"
 4. EXCLUSIONS: Ask what they're tired of seeing. Frame it as: "What makes you instantly scroll past?" This catches the stuff they hate that might sneak through keyword matching.
 5. STRICTNESS: Ask how picky the feed should be. Frame as "Do you want a busy feed with occasional misses, or a quiet feed where every post hits?"
-6. SAVE: Output the config.
+6. CONFIRM: When the user signals they're satisfied, output FEED_DONE on its own line.
 
-EARLY EXIT: If the user says anything like "make my feed now", "just go ahead", "finalize", "skip the rest", or otherwise asks you to wrap up early, DO NOT ask another clarifying question — immediately go to step 6 (SAVE). Use sensible defaults for any dimensions you haven't covered: vibes can be inferred from their answers so far, exclude_topics/exclude_keywords can be empty, embedding_threshold 0.5, judge_strictness "moderate". Get them to a feed in this turn.
+EARLY EXIT: If the user says anything like "make my feed now", "just go ahead", "finalize", "skip the rest", or otherwise asks you to wrap up early, DO NOT ask another clarifying question — immediately go to FEED_DONE. Use sensible defaults for any dimensions you haven't covered: vibes can be inferred from their answers so far, exclude_topics/exclude_keywords can be empty, embedding_threshold 0.5, judge_strictness "moderate".
 
 IMPORTANT — keyword generation:
-When you save, generate 10-20 SPECIFIC keywords. Not just "AI" — think "transformer architecture", "GPT", "diffusion models", "RLHF", "open source LLMs". The more specific and varied the keywords, the better the embedding matching works. Include jargon, names of people/projects/tools they'd care about, and slang their community uses.
+Generate 10-20 SPECIFIC keywords. Not just "AI" — think "transformer architecture", "GPT", "diffusion models", "RLHF", "open source LLMs". The more specific and varied the keywords, the better the embedding matching works. Include jargon, names of people/projects/tools they'd care about, and slang their community uses.
 
-When you have enough info, output:
-FEED_NAME:Short Feed Name
-FEED_CONFIG_JSON:{"topics":["topic1","topic2"],"keywords":["specific1","specific2","specific3"],"exclude_topics":["bad1"],"exclude_keywords":["bad1"],"vibes":"detailed vibe description — tone, energy, what makes it click","embedding_threshold":0.5,"judge_enabled":true,"judge_strictness":"moderate"}
+LIVE CONFIG — after EVERY assistant reply, append BOTH of these on their own lines:
+- FEED_NAME:Short Feed Name (2-4 words, punchy — e.g. "Indie Dev Underground", "NBA Brain", "AI Paper Trail"). Re-emit each turn; you may refine the name as you learn more.
+- FEED_CONFIG_JSON:{"topics":[...],"keywords":[...],"exclude_topics":[...],"exclude_keywords":[...],"vibes":"...","embedding_threshold":0.5,"judge_enabled":true,"judge_strictness":"moderate"}
 
-FEED_NAME: 2-4 words, punchy, memorable (e.g. "Indie Dev Underground", "NBA Brain", "AI Paper Trail", "Design Twitter").
+The FEED_CONFIG_JSON must reflect your CURRENT BEST UNDERSTANDING of the user's preferences — cumulative, not a delta. Always include EVERY field you've inferred so far. Empty arrays are fine for fields you haven't probed yet ("[]"), and an empty string is fine for vibes early on. NEVER drop a field or value you previously inferred unless the user explicitly contradicts it. The settings panel updates live as you emit this, so partial-but-growing is exactly right.
 
-Then confirm with options to tweak or finish.
-
-When they confirm, output FEED_DONE on its own line and a single closing sentence. No options after FEED_DONE.
+When the user confirms, output FEED_DONE on its own line plus a single closing sentence. Still emit FEED_NAME and FEED_CONFIG_JSON on the same final reply.
 
 Current saved preferences:
 `;
@@ -136,19 +134,40 @@ export async function POST(req: NextRequest) {
       await updateFeed(feedId, { name: nameMatch[1].trim() });
     }
 
-    // Check for config (new format)
-    const configMatch = assistantText.match(/FEED_CONFIG_JSON:(\{.*\})/);
+    // Check for config (new format). Merge with existing semantic_config so
+    // the agent emitting a sparser config on a later turn doesn't wipe fields
+    // it inferred earlier — only an explicit non-empty override should replace.
+    const configMatch = assistantText.match(/FEED_CONFIG_JSON:\s*(\{[\s\S]*?\})\s*$/m)
+      || assistantText.match(/FEED_CONFIG_JSON:\s*(\{[\s\S]*\})/);
     if (configMatch) {
       try {
-        const config = JSON.parse(configMatch[1]) as SemanticConfig;
+        const incoming = JSON.parse(configMatch[1]) as Partial<SemanticConfig>;
+        const existing = (feed.semantic_config || {}) as Partial<SemanticConfig>;
+        const pickList = (a?: string[], b?: string[]) =>
+          a && a.length > 0 ? a : b ?? [];
+        const pickScalar = <T>(a: T | undefined, b: T | undefined): T | undefined =>
+          a !== undefined ? a : b;
+        const merged: SemanticConfig = {
+          topics: pickList(incoming.topics, existing.topics),
+          keywords: pickList(incoming.keywords, existing.keywords),
+          exclude_topics: pickList(incoming.exclude_topics, existing.exclude_topics),
+          exclude_keywords: pickList(incoming.exclude_keywords, existing.exclude_keywords),
+          vibes: pickScalar(incoming.vibes, existing.vibes) ?? "",
+          embedding_threshold:
+            pickScalar(incoming.embedding_threshold, existing.embedding_threshold) ?? 0.5,
+          judge_enabled:
+            pickScalar(incoming.judge_enabled, existing.judge_enabled) ?? true,
+          judge_strictness:
+            pickScalar(incoming.judge_strictness, existing.judge_strictness) ?? "moderate",
+        };
         const description = [
-          ...(config.topics || []),
-          ...(config.keywords || []),
-          config.vibes,
+          ...merged.topics,
+          ...merged.keywords,
+          merged.vibes,
         ]
           .filter(Boolean)
           .join(", ");
-        await updateFeed(feedId, { description, semantic_config: config });
+        await updateFeed(feedId, { description, semantic_config: merged });
       } catch {
         // parsing failed, skip
       }
@@ -157,7 +176,7 @@ export async function POST(req: NextRequest) {
     // Backward compat: check for old criteria format
     if (!configMatch) {
       const criteriaMatch = assistantText.match(
-        /FEED_CRITERIA_JSON:(\{.*\})/
+        /FEED_CRITERIA_JSON:\s*(\{[\s\S]*\})/
       );
       if (criteriaMatch) {
         try {
@@ -194,10 +213,10 @@ export async function POST(req: NextRequest) {
 
     // Clean control lines out of the displayed message
     const cleanedText = assistantText
-      .replace(/FEED_NAME:.+\n?/, "")
-      .replace(/FEED_CONFIG_JSON:\{.*\}\n?/, "")
-      .replace(/FEED_CRITERIA_JSON:\{.*\}\n?/, "")
-      .replace(/FEED_DONE\n?/, "")
+      .replace(/FEED_NAME:.+\n?/g, "")
+      .replace(/FEED_CONFIG_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+      .replace(/FEED_CRITERIA_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+      .replace(/FEED_DONE\n?/g, "")
       .trim();
 
     await addChatMessage(feedId, "assistant", cleanedText);
