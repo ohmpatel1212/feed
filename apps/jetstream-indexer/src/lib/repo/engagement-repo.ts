@@ -1,0 +1,40 @@
+// Engagement counter increments — monotonic (we ignore unlike / unrepost).
+// Both like and repost flow through here. Reply / quote counters are
+// maintained by post-repo as a side effect of post inserts.
+
+import { withClient } from '../pg.js'
+import type { LikeRecord, RepostRecord } from '../jetstream-extract.js'
+
+type Kind = 'like' | 'repost'
+
+const bumpCounters = async (rows: LikeRecord[], kind: Kind): Promise<void> => {
+  if (rows.length === 0) return
+  // Aggregate by subject_uri so a single batch with N likes on the same post
+  // only touches one row.
+  const tally = new Map<string, number>()
+  for (const r of rows) tally.set(r.subject_uri, (tally.get(r.subject_uri) ?? 0) + 1)
+
+  const uris: string[] = []
+  const deltas: number[] = []
+  for (const [uri, d] of tally) {
+    uris.push(uri)
+    deltas.push(d)
+  }
+
+  const column = kind === 'like' ? 'like_count' : 'repost_count'
+
+  await withClient((c) =>
+    c.query(
+      `INSERT INTO bsky.post_engagement (uri, ${column}, updated_at)
+       SELECT u.uri, u.d, now()
+       FROM unnest($1::text[], $2::int[]) AS u(uri, d)
+       ON CONFLICT (uri) DO UPDATE SET
+         ${column} = bsky.post_engagement.${column} + EXCLUDED.${column},
+         updated_at = now()`,
+      [uris, deltas],
+    ),
+  )
+}
+
+export const bumpLikeCounters = (rows: LikeRecord[]) => bumpCounters(rows, 'like')
+export const bumpRepostCounters = (rows: RepostRecord[]) => bumpCounters(rows, 'repost')

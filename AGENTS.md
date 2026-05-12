@@ -28,26 +28,42 @@ Each app is self-contained with its own `package.json` and `package-lock.json`. 
 | Web framework | Next.js 16 (App Router) on Node 22 — `npm run dev` from `apps/web/` |
 | Worker runtime | Node 22 + tsx — `npm start` from `apps/jetstream-indexer/` |
 | Package manager | npm (each app has its own `package-lock.json`) |
-| Database | Cloud SQL Postgres 15 in GCP project `timelines-492720`, instance `feed-db` |
+| Database | Cloud SQL Postgres 15 in `timelines-492720`. Two instances: `feed-db` (web app) and `bsky-db` (indexer). |
 | Auth | Firebase Auth (Google sign-in). Token verified on the server in `apps/web/src/lib/auth.ts`. No user-managed admin SA key (org policy blocks creation), so prod uses insecure-decode fallback for the demo. |
 | Chat LLM | Anthropic Claude (`claude-sonnet-4`) via `@anthropic-ai/sdk` — `/api/chat`, `/api/import-memory` |
 | Post search | Vertex AI Vector Search — called directly from `apps/web/src/lib/vector-search.ts` |
 | Hosting | Both services on Cloud Run in `timelines-492720` |
 
-## Tables
+## Databases
 
-- `users` — Firebase UID → internal Postgres UUID
-- `feeds` — per-user feed configs (`name`, `mechanical_filters`, `semantic_config`, `description`)
-- `chat_messages` — per-feed chat transcripts
-- `subscribers` — landing-page mailing list
-- `published_rkey` column on `feeds` is unused (publish flow is on hold)
+**Two Cloud SQL instances**, one database each:
+
+- **Instance `feed-db`** (db-f1-micro) — hosts the web app's `feed_curator` database. Secret: `database-url`.
+  - `users` — Firebase UID → internal Postgres UUID
+  - `feeds` — per-user feed configs (`name`, `mechanical_filters`, `semantic_config`, `description`)
+  - `chat_messages` — per-feed chat transcripts
+  - `subscribers` — landing-page mailing list
+- **Instance `bsky-db`** (db-custom-1-3840, dedicated CPU) — hosts the indexer's `bsky_posts` database. Secret: `bsky-database-url`. Schema migrated on indexer boot from `apps/jetstream-indexer/sql/*.sql`.
+  - `bsky.posts` — full post body, embed metadata, reply refs, facets, plus cached embedding vector (`embedding_vec bytea`) so the reconciler can re-upsert without re-embedding
+  - `bsky.post_engagement` — counters (`like_count`, `repost_count`, `reply_count`, `quote_count`) + `last_pushed_to_vertex_at`
+  - `bsky.authors` — handle, display name, description, avatar/banner CIDs
+  - `bsky.handles_history` — append-only on handle changes (Jetstream identity events)
+  - `bsky.consumer_state` — per-consumer Jetstream cursor in microseconds
+
+The split: write-heavy bsky firehose got its own dedicated-CPU instance so it can't contend with the curator UI's queries. Connection strings carry instance via env vars: web reads `CLOUDSQL_CONNECTION_NAME` for feed-db; indexer and web's bsky pool both read `BSKY_CLOUDSQL_CONNECTION_NAME` for bsky-db.
 
 # Vector search
 
 Both services talk to the **same** Vertex Vector Search index in `timelines-492720` / `us-central1`:
 
-- **Read side** (`apps/web/src/lib/vector-search.ts`): embeds the user query with Gemini (`gemini-embedding-001`, 768d, `RETRIEVAL_QUERY`), then `MatchServiceClient.findNeighbors` with `returnFullDatapoint: true`. Post text + metadata are stored as Vertex datapoint **restricts** so a single round-trip hydrates the result without a separate KV lookup.
-- **Write side** (`apps/jetstream-indexer/`): consumes Bluesky Jetstream, embeds with `RETRIEVAL_DOCUMENT` task type, calls `IndexServiceClient.upsertDatapoints`. Maintains a cursor in `gs://happy-feed-data-timelines/state/jetstream-cursor.json` so it resumes after restarts. Also archives raw posts + embeddings as parquet under `gs://happy-feed-data-timelines/{posts,embeddings}/`.
+- **Read side** (`apps/web/src/lib/vector-search.ts`): embeds the user query with Gemini (`gemini-embedding-001`, 768d, `RETRIEVAL_QUERY`), then `MatchServiceClient.findNeighbors`. The datapoint carries only the `uri` restrict + filter restricts + numeric_restricts — **no text**. After Vertex returns URIs, the read side hydrates from `bsky.posts LEFT JOIN bsky.authors LEFT JOIN bsky.post_engagement` via `apps/web/src/lib/bsky-pg.ts`.
+- **Write side** (`apps/jetstream-indexer/`): three parallel Jetstream consumers in one process:
+  - `postConsumer` — `app.bsky.feed.post` creates + deletes. Composes embedding input as `text + image alt + external title/description`, embeds via Gemini `RETRIEVAL_DOCUMENT`, upserts to Vertex (restricts only) + `bsky.posts` (full record + cached vector). Reply / quote create events also bump `reply_count`/`quote_count` of the parent/target.
+  - `engagementConsumer` — `app.bsky.feed.like` + `app.bsky.feed.repost` creates. Monotonic counters in `bsky.post_engagement`; delete events ignored (drift ~1–5%, see DECISIONS.md).
+  - `profileConsumer` — `app.bsky.actor.profile` + Jetstream `identity` events. Updates `bsky.authors` and appends `bsky.handles_history`.
+  - `vertexReconciler` — every 60s, scans dirty rows in `bsky.post_engagement` and pushes new numeric_restricts to Vertex using the cached `embedding_vec` from `bsky.posts` (no re-embed).
+
+All four loops share one Cloud Run instance. Per-consumer cursors live in `bsky.consumer_state`; restart-safe. All consumers also write parquet to `gs://happy-feed-data-timelines/jetstream/{posts,likes,reposts,profiles,identity}/dt=YYYY-MM-DD/` as the internal replay log.
 
 Both processes run as the default compute SA `777152549518-compute@developer.gserviceaccount.com`, which has `roles/aiplatform.user` on `timelines-492720`.
 
@@ -85,15 +101,16 @@ npm start    # writes to gs://happy-feed-data-timelines and the prod Vertex inde
 
 # Jetstream indexer
 
-`apps/jetstream-indexer/src/worker.ts` is a long-lived process that:
+`apps/jetstream-indexer/src/worker.ts` orchestrates four parallel loops in a single Node process:
 
-1. Subscribes to Bluesky Jetstream (`jetstream2.us-west.bsky.network`) for `app.bsky.feed.post` create events
-2. Extracts post text + metadata, embeds each batch via Vertex Gemini
-3. Upserts datapoints into Vertex (`STREAM_UPDATE` index) with restricts: `id`, `uri`, `text`, `did`, `lang`, `domain`, `has_images`, `has_video`, `has_quote`, `has_external_link`, plus numeric `created_at_us`
-4. Archives raw posts + embeddings as parquet to GCS (partitioned by date)
-5. Checkpoints the Jetstream cursor to GCS after each flush so restarts don't replay
+1. `postConsumer` — subscribes to `app.bsky.feed.post`. Extracts everything (text, reply refs, facets, embed details, langs, hashtags, mentions, self-labels). Embeds via Gemini using `composeEmbedInput` (text + image alts + external link card). Upserts: Vertex (vector + restricts), `bsky.posts` (full record + cached vector), parquet posts archive. Reply/quote post creates bump counters on parent/target.
+2. `engagementConsumer` — subscribes to `app.bsky.feed.like` + `app.bsky.feed.repost` (creates only). Monotonic increments into `bsky.post_engagement`. Delete events ignored.
+3. `profileConsumer` — subscribes to `app.bsky.actor.profile` + Jetstream `identity` events. Upserts `bsky.authors`, appends `bsky.handles_history` on handle changes.
+4. `vertexReconciler` — every 60s, picks up rows from `bsky.post_engagement` where `updated_at > last_pushed_to_vertex_at`, re-upserts to Vertex with new numeric_restricts using the cached `embedding_vec`. No re-embedding.
 
-Cloud Run config: `--no-cpu-throttling`, `--min-instances=1 --max-instances=1 --concurrency=1`, `--memory=1Gi`. Concurrency=1 prevents races on the cursor file.
+Schema migrations run on boot from `apps/jetstream-indexer/sql/*.sql` against the `bsky` database.
+
+Cloud Run config: `--no-cpu-throttling`, `--min-instances=1 --max-instances=1 --concurrency=1`, `--cpu=2`, `--memory=2Gi`. Concurrency=1 prevents cursor races. Per-consumer cursors live in `bsky.consumer_state`.
 
 Deploy:
 
@@ -104,8 +121,17 @@ gcloud run deploy jetstream-indexer \
   --image=us-central1-docker.pkg.dev/timelines-492720/jetstream-indexer/worker:latest \
   --region=us-central1 --project=timelines-492720 \
   --no-cpu-throttling --min-instances=1 --max-instances=1 --concurrency=1 \
-  --memory=1Gi \
+  --cpu=2 --memory=2Gi \
   --service-account=777152549518-compute@developer.gserviceaccount.com
+```
+
+To wipe + rewind for a fresh backfill (last 4 days):
+
+```bash
+cd apps/jetstream-indexer
+npx tsx scripts/wipe-and-rewind.ts 4    # TRUNCATEs bsky.* and rewinds cursors
+# Restart the Cloud Run service; consumers replay from the rewound cursors
+# subject to Jetstream's retention (community reports ~hours, operator-dependent).
 ```
 
 (Env vars are baked into the image's defaults via `src/config.ts`; override at deploy time with `--update-env-vars` if needed.)
@@ -133,11 +159,12 @@ Provisioning new Vertex resources from scratch lives in `apps/jetstream-indexer/
 
 # Secrets
 
-Two real secrets live in **Google Secret Manager** in `timelines-492720`:
+Three real secrets live in **Google Secret Manager** in `timelines-492720`:
 
 | Secret | What |
 |---|---|
-| `database-url` | Full Cloud SQL connection string (includes the postgres password) |
+| `database-url` | Cloud SQL connection string for the `feed` database (web app) |
+| `bsky-database-url` | Cloud SQL connection string for the `bsky` database (indexer + read-side hydration) |
 | `anthropic-api-key` | Anthropic Claude API key |
 
 **The code fetches them at runtime** — see `apps/web/src/lib/secrets.ts`. There are no `--set-secrets` mounts on Cloud Run and no plaintext copies in `.env.local`. The pattern:
@@ -159,7 +186,8 @@ const c = await client();       // fetches ANTHROPIC_API_KEY from SM on first ca
 
 | What | Where |
 |---|---|
-| Cloud SQL `feed-db` | `gcloud sql instances describe feed-db --project=timelines-492720` |
+| Cloud SQL `feed-db` (web app) | `gcloud sql instances describe feed-db --project=timelines-492720` |
+| Cloud SQL `bsky-db` (indexer) | `gcloud sql instances describe bsky-db --project=timelines-492720` |
 | Firebase project | `timelines-492720` (display name "timelines"). Authorized domains list managed via Identity Toolkit Admin API. |
 | Secret Manager | `gcloud secrets list --project=timelines-492720` |
 | Vertex index + endpoint | project `timelines-492720`, region `us-central1`, index `2186420653274431488`, endpoint `5941683870687559680` |
