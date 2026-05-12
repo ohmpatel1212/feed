@@ -5,9 +5,11 @@ import { Connector, IpAddressTypes } from "@google-cloud/cloud-sql-connector";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { getSecret } from "./secrets";
 
+// Dedicated bsky-db instance (separate from feed-db). The web app reads the
+// bsky_posts database for hydration after Vertex returns URIs.
 const INSTANCE_CONNECTION_NAME =
-  process.env.CLOUDSQL_CONNECTION_NAME ??
-  "timelines-492720:us-central1:feed-db";
+  process.env.BSKY_CLOUDSQL_CONNECTION_NAME ??
+  "timelines-492720:us-central1:bsky-db";
 
 const SECRET_NAME = process.env.BSKY_DATABASE_SECRET ?? "bsky-database-url";
 
@@ -23,7 +25,7 @@ export async function getBskyPool(): Promise<Pool> {
     const u = new URL(dsn);
     const user = decodeURIComponent(u.username);
     const password = decodeURIComponent(u.password);
-    const database = u.pathname.replace(/^\//, "") || "bsky";
+    const database = u.pathname.replace(/^\//, "") || "bsky_posts";
 
     _connector = new Connector();
     const clientOpts = await _connector.getOptions({
@@ -36,8 +38,8 @@ export async function getBskyPool(): Promise<Pool> {
       user,
       password,
       database,
-      // feed-db is db-f1-micro (50 max_conns); indexer takes 15, feed pool 20.
-      max: 5,
+      // bsky-db is dedicated to the indexer + this read pool. ~200 max_connections.
+      max: 15,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
     });

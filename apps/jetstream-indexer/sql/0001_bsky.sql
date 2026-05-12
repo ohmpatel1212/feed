@@ -1,4 +1,4 @@
--- bsky schema. Target database: bsky (in Cloud SQL instance feed-db).
+-- bsky schema. Target database: bsky_posts (in Cloud SQL instance bsky-db).
 -- Times stored as bigint microseconds (matches Jetstream time_us) plus a
 -- timestamptz convenience column where useful.
 

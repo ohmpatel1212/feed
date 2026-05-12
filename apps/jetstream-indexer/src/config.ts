@@ -18,8 +18,8 @@ export const config = {
   vertexIndexEndpointHost: process.env.VERTEX_INDEX_ENDPOINT_HOST ?? '',
   vertexDeployedIndexId: process.env.VERTEX_DEPLOYED_INDEX_ID ?? 'happy_feed_deployed',
 
-  cloudSqlInstance:
-    process.env.CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:feed-db',
+  bskyCloudSqlInstance:
+    process.env.BSKY_CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:bsky-db',
 
   // Per-consumer flush tuning. Engagement is high-volume; posts are richer; profiles trickle.
   postFlushMs: parseInt(process.env.POST_FLUSH_MS ?? '5000', 10),

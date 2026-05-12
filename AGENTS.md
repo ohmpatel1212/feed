@@ -28,7 +28,7 @@ Each app is self-contained with its own `package.json` and `package-lock.json`. 
 | Web framework | Next.js 16 (App Router) on Node 22 — `npm run dev` from `apps/web/` |
 | Worker runtime | Node 22 + tsx — `npm start` from `apps/jetstream-indexer/` |
 | Package manager | npm (each app has its own `package-lock.json`) |
-| Database | Cloud SQL Postgres 15 in GCP project `timelines-492720`, instance `feed-db` |
+| Database | Cloud SQL Postgres 15 in `timelines-492720`. Two instances: `feed-db` (web app) and `bsky-db` (indexer). |
 | Auth | Firebase Auth (Google sign-in). Token verified on the server in `apps/web/src/lib/auth.ts`. No user-managed admin SA key (org policy blocks creation), so prod uses insecure-decode fallback for the demo. |
 | Chat LLM | Anthropic Claude (`claude-sonnet-4`) via `@anthropic-ai/sdk` — `/api/chat`, `/api/import-memory` |
 | Post search | Vertex AI Vector Search — called directly from `apps/web/src/lib/vector-search.ts` |
@@ -36,20 +36,21 @@ Each app is self-contained with its own `package.json` and `package-lock.json`. 
 
 ## Databases
 
-Two databases in the same Cloud SQL instance `feed-db`:
+**Two Cloud SQL instances**, one database each:
 
-- **`feed`** (default) — web-app tables. Secret: `database-url`.
+- **Instance `feed-db`** (db-f1-micro) — hosts the web app's `feed_curator` database. Secret: `database-url`.
   - `users` — Firebase UID → internal Postgres UUID
   - `feeds` — per-user feed configs (`name`, `mechanical_filters`, `semantic_config`, `description`)
   - `chat_messages` — per-feed chat transcripts
   - `subscribers` — landing-page mailing list
-  - `published_rkey` column on `feeds` is unused (publish flow is on hold)
-- **`bsky`** — indexer tables. Secret: `bsky-database-url`. Schema migrated on indexer boot from `apps/jetstream-indexer/sql/*.sql`.
+- **Instance `bsky-db`** (db-custom-1-3840, dedicated CPU) — hosts the indexer's `bsky_posts` database. Secret: `bsky-database-url`. Schema migrated on indexer boot from `apps/jetstream-indexer/sql/*.sql`.
   - `bsky.posts` — full post body, embed metadata, reply refs, facets, plus cached embedding vector (`embedding_vec bytea`) so the reconciler can re-upsert without re-embedding
   - `bsky.post_engagement` — counters (`like_count`, `repost_count`, `reply_count`, `quote_count`) + `last_pushed_to_vertex_at`
   - `bsky.authors` — handle, display name, description, avatar/banner CIDs
   - `bsky.handles_history` — append-only on handle changes (Jetstream identity events)
   - `bsky.consumer_state` — per-consumer Jetstream cursor in microseconds
+
+The split: write-heavy bsky firehose got its own dedicated-CPU instance so it can't contend with the curator UI's queries. Connection strings carry instance via env vars: web reads `CLOUDSQL_CONNECTION_NAME` for feed-db; indexer and web's bsky pool both read `BSKY_CLOUDSQL_CONNECTION_NAME` for bsky-db.
 
 # Vector search
 
@@ -185,7 +186,8 @@ const c = await client();       // fetches ANTHROPIC_API_KEY from SM on first ca
 
 | What | Where |
 |---|---|
-| Cloud SQL `feed-db` | `gcloud sql instances describe feed-db --project=timelines-492720` |
+| Cloud SQL `feed-db` (web app) | `gcloud sql instances describe feed-db --project=timelines-492720` |
+| Cloud SQL `bsky-db` (indexer) | `gcloud sql instances describe bsky-db --project=timelines-492720` |
 | Firebase project | `timelines-492720` (display name "timelines"). Authorized domains list managed via Identity Toolkit Admin API. |
 | Secret Manager | `gcloud secrets list --project=timelines-492720` |
 | Vertex index + endpoint | project `timelines-492720`, region `us-central1`, index `2186420653274431488`, endpoint `5941683870687559680` |

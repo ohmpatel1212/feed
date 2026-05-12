@@ -7,8 +7,10 @@ import { Connector, IpAddressTypes } from '@google-cloud/cloud-sql-connector'
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg'
 import { getSecret } from './secrets.js'
 
+// Dedicated instance for the indexer — separate from the web app's feed-db so
+// firehose-rate writes don't contend with curator queries.
 const INSTANCE_CONNECTION_NAME =
-  process.env.CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:feed-db'
+  process.env.BSKY_CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:bsky-db'
 
 const SECRET_NAME = process.env.BSKY_DATABASE_SECRET ?? 'bsky-database-url'
 
@@ -24,7 +26,7 @@ export const getPool = async (): Promise<Pool> => {
     const u = new URL(dsn)
     const user = decodeURIComponent(u.username)
     const password = decodeURIComponent(u.password)
-    const database = u.pathname.replace(/^\//, '') || 'bsky'
+    const database = u.pathname.replace(/^\//, '') || 'bsky_posts'
 
     _connector = new Connector()
     const clientOpts = await _connector.getOptions({
@@ -37,9 +39,9 @@ export const getPool = async (): Promise<Pool> => {
       user,
       password,
       database,
-      // feed-db is db-f1-micro with max_connections=50 total. Web app feed pool
-      // takes 20, web app bsky pool takes 5, indexer leaves headroom for spikes.
-      max: 15,
+      // bsky-db is db-custom-1-3840 (dedicated CPU, ~200 max_connections).
+      // Indexer owns the instance — no need to share with the web app.
+      max: 30,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 5_000,
     })
