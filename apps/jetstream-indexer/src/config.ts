@@ -17,6 +17,19 @@ export const config = {
   vertexIndexEndpointId: process.env.VERTEX_INDEX_ENDPOINT_ID ?? '',
   vertexIndexEndpointHost: process.env.VERTEX_INDEX_ENDPOINT_HOST ?? '',
   vertexDeployedIndexId: process.env.VERTEX_DEPLOYED_INDEX_ID ?? 'happy_feed_deployed',
+
+  cloudSqlInstance:
+    process.env.CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:feed-db',
+
+  // Per-consumer flush tuning. Engagement is high-volume; posts are richer; profiles trickle.
+  postFlushMs: parseInt(process.env.POST_FLUSH_MS ?? '5000', 10),
+  postBatchMax: parseInt(process.env.POST_BATCH_MAX ?? '200', 10),
+  engagementFlushMs: parseInt(process.env.ENGAGEMENT_FLUSH_MS ?? '2000', 10),
+  engagementBatchMax: parseInt(process.env.ENGAGEMENT_BATCH_MAX ?? '2000', 10),
+  profileFlushMs: parseInt(process.env.PROFILE_FLUSH_MS ?? '10000', 10),
+  profileBatchMax: parseInt(process.env.PROFILE_BATCH_MAX ?? '50', 10),
+  reconcilerIntervalMs: parseInt(process.env.RECONCILER_INTERVAL_MS ?? '60000', 10),
+  reconcilerBatchMax: parseInt(process.env.RECONCILER_BATCH_MAX ?? '500', 10),
 } as const
 
 export type Config = typeof config

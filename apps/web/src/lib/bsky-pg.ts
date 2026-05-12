@@ -1,0 +1,76 @@
+// Postgres pool for the bsky database (Cloud SQL feed-db, separate database
+// from the web app's feed db). Same connector / secrets pattern as pg.ts.
+
+import { Connector, IpAddressTypes } from "@google-cloud/cloud-sql-connector";
+import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
+import { getSecret } from "./secrets";
+
+const INSTANCE_CONNECTION_NAME =
+  process.env.CLOUDSQL_CONNECTION_NAME ??
+  "timelines-492720:us-central1:feed-db";
+
+const SECRET_NAME = process.env.BSKY_DATABASE_SECRET ?? "bsky-database-url";
+
+let _pool: Pool | null = null;
+let _poolInit: Promise<Pool> | null = null;
+let _connector: Connector | null = null;
+
+export async function getBskyPool(): Promise<Pool> {
+  if (_pool) return _pool;
+  if (_poolInit) return _poolInit;
+  const init = (async () => {
+    const dsn = await getSecret(SECRET_NAME);
+    const u = new URL(dsn);
+    const user = decodeURIComponent(u.username);
+    const password = decodeURIComponent(u.password);
+    const database = u.pathname.replace(/^\//, "") || "bsky";
+
+    _connector = new Connector();
+    const clientOpts = await _connector.getOptions({
+      instanceConnectionName: INSTANCE_CONNECTION_NAME,
+      ipType: IpAddressTypes.PUBLIC,
+    });
+
+    const pool = new Pool({
+      ...clientOpts,
+      user,
+      password,
+      database,
+      // feed-db is db-f1-micro (50 max_conns); indexer takes 15, feed pool 20.
+      max: 5,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5_000,
+    });
+    pool.on("error", (err) => {
+      console.error("[bsky-pg] pool error:", err.message);
+    });
+    _pool = pool;
+    return pool;
+  })();
+  _poolInit = init;
+  init.catch((err) => {
+    console.error("[bsky-pg] pool init failed:", err?.code, err?.message ?? err);
+    if (_poolInit === init) _poolInit = null;
+  });
+  return init;
+}
+
+export async function bskyQuery<R extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[]
+): Promise<QueryResult<R>> {
+  const pool = await getBskyPool();
+  return pool.query<R>(text, params);
+}
+
+export async function withBskyClient<T>(
+  fn: (c: PoolClient) => Promise<T>
+): Promise<T> {
+  const pool = await getBskyPool();
+  const c = await pool.connect();
+  try {
+    return await fn(c);
+  } finally {
+    c.release();
+  }
+}

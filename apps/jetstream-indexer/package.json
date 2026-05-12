@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@google-cloud/aiplatform": "^6.7.0",
+    "@google-cloud/cloud-sql-connector": "^1.4.0",
     "@google-cloud/opentelemetry-cloud-monitoring-exporter": "^0.21.0",
+    "@google-cloud/secret-manager": "^6.1.0",
     "@google-cloud/storage": "^7.14.0",
     "@google/genai": "^2.0.0",
     "@opentelemetry/api": "^1.9.1",
@@ -19,10 +21,12 @@
     "@skyware/jetstream": "^0.2.0",
     "hyparquet": "^1.25.0",
     "hyparquet-writer": "^0.14.0",
+    "pg": "^8.13.0",
     "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/pg": "^8.11.10",
     "typescript": "^5"
   }
 }

@@ -1,22 +1,23 @@
 /**
- * Direct Vertex AI Vector Search client.
+ * Vector Search → Postgres hydration.
  *
- * Embeds the query with Gemini (`gemini-embedding-001`, 768d, RETRIEVAL_QUERY)
- * then calls MatchServiceClient.findNeighbors against the Vertex Vector Search
- * index in `timelines-492720`. Post text + metadata are stored as datapoint
- * restricts by the jetstream-indexer worker, so a single round-trip returns
- * hydrated posts.
+ * 1. Embed the query with Gemini (`gemini-embedding-001`, 768d, RETRIEVAL_QUERY).
+ * 2. findNeighbors against Vertex AI Vector Search — returns vector scores +
+ *    restricts (including `uri`).
+ * 3. Hydrate the full post from Postgres (`bsky.posts` LEFT JOIN `bsky.authors`
+ *    LEFT JOIN `bsky.post_engagement`) in a single batched query.
  *
- * The runtime needs ADC with `roles/aiplatform.user` on this project. On
- * Cloud Run, the default compute SA already has it.
+ * Post text + display fields live in `bsky.posts`; the vector index carries
+ * only filter restricts. The runtime needs ADC with `roles/aiplatform.user`
+ * + `roles/secretmanager.secretAccessor` on `bsky-database-url`.
  */
 
 import { v1 } from "@google-cloud/aiplatform";
 import { GoogleGenAI } from "@google/genai";
+import { bskyQuery } from "./bsky-pg";
 
 const { MatchServiceClient } = v1;
 
-// Public resource IDs (not secrets). Overridable via env for local-dev / staging.
 const VERTEX_PROJECT = process.env.VERTEX_PROJECT ?? "timelines-492720";
 const VERTEX_LOCATION = process.env.VERTEX_LOCATION ?? "us-central1";
 const VERTEX_INDEX_ENDPOINT_ID =
@@ -58,12 +59,34 @@ export interface VectorHit {
   text: string;
   created_at: string;
   vector_score: number;
+
+  langs: string[];
   has_images: boolean;
   has_video: boolean;
   has_quote: boolean;
   has_external_link: boolean;
+  is_reply: boolean;
+  reply_parent_uri: string | null;
+  reply_root_uri: string | null;
+  image_count: number;
+  image_alts: string[];
+  external_uri: string | null;
+  external_title: string | null;
+  external_desc: string | null;
+  quote_uri: string | null;
+  hashtags: string[];
+  mention_dids: string[];
   domains: string[];
-  lang: string | null;
+  self_labels: string[];
+
+  like_count: number;
+  repost_count: number;
+  reply_count: number;
+  quote_count: number;
+
+  author_handle: string | null;
+  author_display_name: string | null;
+  author_avatar_cid: string | null;
 }
 
 export interface SearchFilter {
@@ -72,7 +95,13 @@ export interface SearchFilter {
   hasVideo?: boolean;
   hasQuote?: boolean;
   hasExternalLink?: boolean;
+  isReply?: boolean;
   didExclude?: string[];
+  hashtags?: string[];
+  selfLabelsDeny?: string[];
+  minLikeCount?: number;
+  minRepostCount?: number;
+  createdAfterUs?: number;
 }
 
 async function embedQuery(query: string): Promise<number[]> {
@@ -91,92 +120,151 @@ async function embedQuery(query: string): Promise<number[]> {
   return values;
 }
 
-function boolToken(b: boolean): string {
-  return b ? "true" : "false";
+const boolToken = (b: boolean): string => (b ? "true" : "false");
+
+function buildQueryRestricts(filter?: SearchFilter): Array<{
+  namespace: string;
+  allowList?: string[];
+  denyList?: string[];
+}> {
+  const out: Array<{ namespace: string; allowList?: string[]; denyList?: string[] }> = [];
+  if (!filter) return out;
+  if (filter.lang?.length) out.push({ namespace: "langs", allowList: filter.lang });
+  if (filter.didExclude?.length) out.push({ namespace: "did", denyList: filter.didExclude });
+  if (filter.hasImages !== undefined) out.push({ namespace: "has_images", allowList: [boolToken(filter.hasImages)] });
+  if (filter.hasVideo !== undefined) out.push({ namespace: "has_video", allowList: [boolToken(filter.hasVideo)] });
+  if (filter.hasQuote !== undefined) out.push({ namespace: "has_quote", allowList: [boolToken(filter.hasQuote)] });
+  if (filter.hasExternalLink !== undefined) out.push({ namespace: "has_external_link", allowList: [boolToken(filter.hasExternalLink)] });
+  if (filter.isReply !== undefined) out.push({ namespace: "is_reply", allowList: [boolToken(filter.isReply)] });
+  if (filter.hashtags?.length) out.push({ namespace: "hashtags", allowList: filter.hashtags.map((t) => t.toLowerCase()) });
+  if (filter.selfLabelsDeny?.length) out.push({ namespace: "self_labels", denyList: filter.selfLabelsDeny });
+  return out;
 }
 
-function buildQueryRestricts(
-  filter?: SearchFilter
-): Array<{ namespace: string; allowList?: string[]; denyList?: string[] }> {
-  const restricts: Array<{
-    namespace: string;
-    allowList?: string[];
-    denyList?: string[];
-  }> = [];
-  if (!filter) return restricts;
-  if (filter.lang?.length)
-    restricts.push({ namespace: "lang", allowList: filter.lang });
-  if (filter.didExclude?.length)
-    restricts.push({ namespace: "did", denyList: filter.didExclude });
-  if (filter.hasImages !== undefined)
-    restricts.push({
-      namespace: "has_images",
-      allowList: [boolToken(filter.hasImages)],
-    });
-  if (filter.hasVideo !== undefined)
-    restricts.push({
-      namespace: "has_video",
-      allowList: [boolToken(filter.hasVideo)],
-    });
-  if (filter.hasQuote !== undefined)
-    restricts.push({
-      namespace: "has_quote",
-      allowList: [boolToken(filter.hasQuote)],
-    });
-  if (filter.hasExternalLink !== undefined)
-    restricts.push({
-      namespace: "has_external_link",
-      allowList: [boolToken(filter.hasExternalLink)],
-    });
-  return restricts;
+type NumericRestrict = {
+  namespace: string;
+  valueInt?: string;
+  op?: "GREATER_EQUAL" | "GREATER" | "LESS" | "LESS_EQUAL" | "EQUAL" | "NOT_EQUAL";
+};
+
+function buildNumericQueryRestricts(filter?: SearchFilter): NumericRestrict[] {
+  // schema_v >= 2 hides old-shape datapoints left over in the index from the
+  // pre-migration indexer (those points have no schema_v namespace so they
+  // don't satisfy the filter).
+  const out: NumericRestrict[] = [
+    { namespace: "schema_v", valueInt: "2", op: "GREATER_EQUAL" },
+  ];
+  if (!filter) return out;
+  if (filter.minLikeCount !== undefined) out.push({ namespace: "like_count", valueInt: String(filter.minLikeCount), op: "GREATER_EQUAL" });
+  if (filter.minRepostCount !== undefined) out.push({ namespace: "repost_count", valueInt: String(filter.minRepostCount), op: "GREATER_EQUAL" });
+  if (filter.createdAfterUs !== undefined) out.push({ namespace: "created_at_us", valueInt: String(filter.createdAfterUs), op: "GREATER_EQUAL" });
+  return out;
 }
 
 interface RawRestrict {
   namespace?: string | null;
   allowList?: string[] | null;
 }
-interface RawNumericRestrict {
-  namespace?: string | null;
-  valueInt?: string | number | null;
+
+interface PgRow {
+  uri: string;
+  did: string;
+  text: string;
+  created_at: Date;
+  langs: string[];
+  has_images: boolean;
+  has_video: boolean;
+  has_quote: boolean;
+  has_external_link: boolean;
+  is_reply: boolean;
+  reply_parent_uri: string | null;
+  reply_root_uri: string | null;
+  image_count: number;
+  image_alts: string[];
+  external_uri: string | null;
+  external_title: string | null;
+  external_desc: string | null;
+  quote_uri: string | null;
+  hashtags: string[];
+  mention_dids: string[];
+  domains: string[];
+  self_labels: string[];
+  like_count: number | null;
+  repost_count: number | null;
+  reply_count: number | null;
+  quote_count: number | null;
+  author_handle: string | null;
+  author_display_name: string | null;
+  author_avatar_cid: string | null;
 }
 
-function reconstructHit(
-  restricts: RawRestrict[],
-  numericRestricts: RawNumericRestrict[],
-  score: number
-): VectorHit | null {
-  const get = (ns: string): string[] =>
-    restricts
-      .filter((r) => r.namespace === ns)
-      .flatMap((r) => r.allowList ?? []);
-  const first = (ns: string): string | undefined => get(ns)[0];
-  const numeric = (ns: string): number | undefined => {
-    const r = numericRestricts.find((nr) => nr.namespace === ns);
-    if (r?.valueInt === undefined || r?.valueInt === null) return undefined;
-    return typeof r.valueInt === "string" ? parseInt(r.valueInt, 10) : r.valueInt;
-  };
+async function hydrateFromPostgres(
+  uris: string[],
+  scoreByUri: Map<string, number>
+): Promise<VectorHit[]> {
+  if (uris.length === 0) return [];
+  const res = await bskyQuery<PgRow>(
+    `SELECT
+       p.uri, p.did, p.text, p.created_at, p.langs,
+       p.has_images, p.has_video, p.has_quote, p.has_external_link,
+       (p.reply_parent_uri IS NOT NULL) AS is_reply,
+       p.reply_parent_uri, p.reply_root_uri,
+       p.image_count, p.image_alts,
+       p.external_uri, p.external_title, p.external_desc, p.quote_uri,
+       p.hashtags, p.mention_dids, p.domains, p.self_labels,
+       pe.like_count, pe.repost_count, pe.reply_count, pe.quote_count,
+       a.handle       AS author_handle,
+       a.display_name AS author_display_name,
+       a.avatar_cid   AS author_avatar_cid
+     FROM bsky.posts p
+     LEFT JOIN bsky.post_engagement pe ON pe.uri = p.uri
+     LEFT JOIN bsky.authors a          ON a.did = p.did
+     WHERE p.uri = ANY($1::text[])`,
+    [uris]
+  );
 
-  const uri = first("uri");
-  if (!uri) return null;
+  const byUri = new Map<string, PgRow>();
+  for (const row of res.rows) byUri.set(row.uri, row);
 
-  const created_at_us = numeric("created_at_us") ?? 0;
-  const created_at = created_at_us
-    ? new Date(Math.floor(created_at_us / 1000)).toISOString()
-    : "";
-
-  return {
-    uri,
-    did: first("did") ?? "",
-    text: first("text") ?? "",
-    created_at,
-    vector_score: score,
-    has_images: first("has_images") === "true",
-    has_video: first("has_video") === "true",
-    has_quote: first("has_quote") === "true",
-    has_external_link: first("has_external_link") === "true",
-    domains: get("domain"),
-    lang: first("lang") ?? null,
-  };
+  const hits: VectorHit[] = [];
+  // Preserve Vertex ordering — iterate uris, not res.rows.
+  for (const uri of uris) {
+    const r = byUri.get(uri);
+    if (!r) continue;
+    hits.push({
+      uri: r.uri,
+      did: r.did,
+      text: r.text,
+      created_at: r.created_at.toISOString(),
+      vector_score: scoreByUri.get(uri) ?? 0,
+      langs: r.langs,
+      has_images: r.has_images,
+      has_video: r.has_video,
+      has_quote: r.has_quote,
+      has_external_link: r.has_external_link,
+      is_reply: r.is_reply,
+      reply_parent_uri: r.reply_parent_uri,
+      reply_root_uri: r.reply_root_uri,
+      image_count: r.image_count,
+      image_alts: r.image_alts,
+      external_uri: r.external_uri,
+      external_title: r.external_title,
+      external_desc: r.external_desc,
+      quote_uri: r.quote_uri,
+      hashtags: r.hashtags,
+      mention_dids: r.mention_dids,
+      domains: r.domains,
+      self_labels: r.self_labels,
+      like_count: r.like_count ?? 0,
+      repost_count: r.repost_count ?? 0,
+      reply_count: r.reply_count ?? 0,
+      quote_count: r.quote_count ?? 0,
+      author_handle: r.author_handle,
+      author_display_name: r.author_display_name,
+      author_avatar_cid: r.author_avatar_cid,
+    });
+  }
+  return hits;
 }
 
 export async function searchPosts(opts: {
@@ -189,35 +277,43 @@ export async function searchPosts(opts: {
 
   const indexEndpoint = `projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/indexEndpoints/${VERTEX_INDEX_ENDPOINT_ID}`;
   const restricts = buildQueryRestricts(opts.filter);
+  const numericRestricts = buildNumericQueryRestricts(opts.filter);
 
-  const [resp] = await matchClient().findNeighbors({
+  const findRes = await matchClient().findNeighbors({
     indexEndpoint,
     deployedIndexId: VERTEX_DEPLOYED_INDEX_ID,
+    // True so the response carries the `uri` restrict — we need it to JOIN to
+    // bsky.posts. With `false`, neighbors come back as opaque datapoint IDs.
     returnFullDatapoint: true,
     queries: [
       {
         datapoint: {
           featureVector: queryVec,
           restricts,
+          numericRestricts,
         },
         neighborCount: k,
       },
     ],
   });
+  const resp = Array.isArray(findRes) ? findRes[0] : findRes;
 
   const neighbors = resp.nearestNeighbors?.[0]?.neighbors ?? [];
-  const hits: VectorHit[] = [];
+  const uris: string[] = [];
+  const scoreByUri = new Map<string, number>();
   for (const n of neighbors) {
+    // We didn't ask for full datapoint, but Vertex returns id + restricts on
+    // findNeighbors anyway. Look for the uri restrict; fall back to id if absent.
     const dp = n.datapoint;
+    const restrictsList = (dp?.restricts ?? []) as RawRestrict[];
+    const uri = restrictsList.find((r) => r.namespace === "uri")?.allowList?.[0];
+    if (!uri) continue;
     const score = typeof n.distance === "number" ? n.distance : 0;
-    const h = reconstructHit(
-      (dp?.restricts ?? []) as RawRestrict[],
-      (dp?.numericRestricts ?? []) as RawNumericRestrict[],
-      score
-    );
-    if (h) hits.push(h);
+    uris.push(uri);
+    scoreByUri.set(uri, score);
   }
-  return hits;
+
+  return hydrateFromPostgres(uris, scoreByUri);
 }
 
 /**
