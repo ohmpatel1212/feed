@@ -33,6 +33,7 @@ yarn-error.log*
 
 # editor
 .vscode/settings.json
+.claude/
 
 # playwright-cli scratch dir
 .playwright-cli/
