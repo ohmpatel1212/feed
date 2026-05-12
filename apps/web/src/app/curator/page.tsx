@@ -96,6 +96,7 @@ export default function CuratorPage() {
 
 function CuratorApp({ profile }: { profile: UserProfile }) {
   const [mobileTab, setMobileTab] = useState<"chat" | "feed" | "tune">("chat");
+  const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [optionsUnread, setOptionsUnread] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -686,9 +687,111 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
           </div>
         </div>
 
-        <div className="cur-workbench">
-          {/* CHAT PANE */}
+        <div className="cur-workbench" data-right-pane={rightPane}>
+          {/* POSTS PANE (middle) */}
+          <div className="cur-feed-posts">
+            <div className="cur-feed-posts-header">
+              <div className="cur-feed-stage">
+                {postsLoading && (
+                  <>
+                    <span className="pulse-dot" />
+                    <span>
+                      {postsStage === "ranking"
+                        ? "Ranking results…"
+                        : "Searching for posts that match your feed…"}
+                    </span>
+                  </>
+                )}
+              </div>
+              {(() => {
+                const fid = activeFeedId ? parseInt(activeFeedId) || null : null;
+                return (
+                  <button
+                    type="button"
+                    className="cur-refresh"
+                    disabled={postsLoading || !fid}
+                    onClick={() => fid && loadPosts(fid)}
+                    title="Refresh posts"
+                  >
+                    ↻ Refresh
+                  </button>
+                );
+              })()}
+            </div>
+            <div className="cur-feed-posts-inner">
+              {posts.length === 0 ? (
+                <div className="cur-empty">
+                  {postsLoading ? (
+                    <p><span className="pulse-dot" />Loading posts…</p>
+                  ) : (
+                    <>
+                      <p>No posts yet.</p>
+                      <p className="sub">
+                        {!hasCriteria
+                          ? "Posts will appear here as we figure out what you're into."
+                          : "Try Refresh, or refine the feed criteria in the chat."}
+                      </p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                posts.map((post) => {
+                  const bskyUrl = (() => {
+                    const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
+                    return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
+                  })();
+                  return (
+                    <div key={post.uri} className="cur-post">
+                      <div className="cur-post-head">
+                        <div className="avatar" />
+                        <span className="handle">{post.author_did.slice(0, 24)}...</span>
+                        <span className={`score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}>
+                          {(post.score * 100).toFixed(0)}%
+                        </span>
+                        {bskyUrl && (
+                          <a
+                            href={bskyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="cur-post-link"
+                            title="Open in Bluesky"
+                            aria-label="Open in Bluesky"
+                          >
+                            ↗
+                          </a>
+                        )}
+                      </div>
+                      <div className="cur-post-body">{post.text}</div>
+                      <div className="cur-post-time">{post.indexed_at}</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* CHAT PANE (right, when rightPane === "chat") */}
           <div className="cur-chat-pane">
+            <div className="cur-right-toggle" role="tablist" aria-label="Workbench mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPane === "chat"}
+                className={`cur-right-seg${rightPane === "chat" ? " active" : ""}`}
+                onClick={() => setRightPane("chat")}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPane === "tune"}
+                className={`cur-right-seg${rightPane === "tune" ? " active" : ""}`}
+                onClick={() => setRightPane("tune")}
+              >
+                Tune
+              </button>
+            </div>
             <div className="cur-chat-area">
               <div className="cur-chat-inner">
                 {messages.map((msg, i) => {
@@ -826,95 +929,15 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
             </div>
           </div>
 
-          {/* POSTS PANE */}
-          <div className="cur-feed-posts">
-            <div className="cur-feed-posts-header">
-              <div className="cur-feed-stage">
-                {postsLoading && (
-                  <>
-                    <span className="pulse-dot" />
-                    <span>
-                      {postsStage === "ranking"
-                        ? "Ranking results…"
-                        : "Searching for posts that match your feed…"}
-                    </span>
-                  </>
-                )}
-              </div>
-              {(() => {
-                const fid = activeFeedId ? parseInt(activeFeedId) || null : null;
-                return (
-                  <button
-                    type="button"
-                    className="cur-refresh"
-                    disabled={postsLoading || !fid}
-                    onClick={() => fid && loadPosts(fid)}
-                    title="Refresh posts"
-                  >
-                    ↻ Refresh
-                  </button>
-                );
-              })()}
-            </div>
-            <div className="cur-feed-posts-inner">
-              {posts.length === 0 ? (
-                <div className="cur-empty">
-                  {postsLoading ? (
-                    <p><span className="pulse-dot" />Loading posts…</p>
-                  ) : (
-                    <>
-                      <p>No posts yet.</p>
-                      <p className="sub">
-                        {!hasCriteria
-                          ? "Posts will appear here as we figure out what you're into."
-                          : "Try Refresh, or refine the feed criteria in the chat."}
-                      </p>
-                    </>
-                  )}
-                </div>
-              ) : (
-                posts.map((post) => {
-                  const bskyUrl = (() => {
-                    const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                    return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                  })();
-                  return (
-                    <div key={post.uri} className="cur-post">
-                      <div className="cur-post-head">
-                        <div className="avatar" />
-                        <span className="handle">{post.author_did.slice(0, 24)}...</span>
-                        <span className={`score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}>
-                          {(post.score * 100).toFixed(0)}%
-                        </span>
-                        {bskyUrl && (
-                          <a
-                            href={bskyUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="cur-post-link"
-                            title="Open in Bluesky"
-                            aria-label="Open in Bluesky"
-                          >
-                            ↗
-                          </a>
-                        )}
-                      </div>
-                      <div className="cur-post-body">{post.text}</div>
-                      <div className="cur-post-time">{post.indexed_at}</div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* SETTINGS / CONTROL TOWER */}
+          {/* TUNE PANEL (right, when rightPane === "tune") */}
           <FilterPanel
             mechanicalFilters={mechanicalFilters || ({} as MechanicalFilters)}
             semanticConfig={semanticConfig || ({} as SemanticConfig)}
             onMechanicalChange={saveMechanicalFilters}
             onSemanticChange={saveSemanticConfig}
             postCount={postCount}
+            rightPane={rightPane}
+            onRightPaneChange={setRightPane}
           />
         </div>
 

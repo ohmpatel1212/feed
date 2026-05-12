@@ -10,6 +10,8 @@ interface FilterPanelProps {
   onMechanicalChange: (filters: MechanicalFilters) => void;
   onSemanticChange: (config: SemanticConfig) => void;
   postCount: number;
+  rightPane?: "chat" | "tune";
+  onRightPaneChange?: (pane: "chat" | "tune") => void;
 }
 
 export default function FilterPanel({
@@ -18,6 +20,8 @@ export default function FilterPanel({
   onMechanicalChange,
   onSemanticChange,
   postCount,
+  rightPane,
+  onRightPaneChange,
 }: FilterPanelProps) {
   const [mech, setMech] = useState<MechanicalFilters>({
     ...DEFAULT_MECHANICAL_FILTERS,
@@ -101,6 +105,28 @@ export default function FilterPanel({
 
   return (
     <div className="ctrl-tower">
+      {onRightPaneChange && (
+        <div className="cur-right-toggle" role="tablist" aria-label="Workbench mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={rightPane === "chat"}
+            className={`cur-right-seg${rightPane === "chat" ? " active" : ""}`}
+            onClick={() => onRightPaneChange("chat")}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={rightPane === "tune"}
+            className={`cur-right-seg${rightPane === "tune" ? " active" : ""}`}
+            onClick={() => onRightPaneChange("tune")}
+          >
+            Tune
+          </button>
+        </div>
+      )}
       <div className="ctrl-header">
         <div className="ctrl-title">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
