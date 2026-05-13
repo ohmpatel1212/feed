@@ -202,11 +202,11 @@ const FEED_COLORS = ["var(--aurora)", "var(--amber)", "var(--ember)", "var(--ros
 
 function parseMessage(content: string) {
   // Defensive: strip control lines that may have leaked into older chat
-  // history (FEED_NAME, FEED_CONFIG_JSON, FEED_CRITERIA_JSON, FEED_DONE).
+  // history (FEED_NAME, FEED_CONFIG_JSON, MECHANICAL_FILTERS_JSON, FEED_DONE).
   const stripped = content
     .replace(/FEED_NAME:.+\n?/g, "")
     .replace(/FEED_CONFIG_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
-    .replace(/FEED_CRITERIA_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+    .replace(/MECHANICAL_FILTERS_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
     .replace(/FEED_DONE\n?/g, "")
     .trim();
   const lines = stripped.split("\n");
@@ -299,6 +299,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
   const serverFeedIdRef = useRef<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const lastSemanticConfigJsonRef = useRef<string>("");
+  const lastMechanicalFiltersJsonRef = useRef<string>("");
   const postsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Save mechanical filters to the server
@@ -377,20 +378,10 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
         setPrefs({ description: data.feed.description, criteria: data.feed.criteria });
         setPrevCriteriaJson(JSON.stringify(data.feed.criteria));
       }
-      if (msgs.length === 0) {
-        // First time — kick off the agent's opening message.
-        const initRes = await authedFetch("/api/chat", {
-          method: "POST",
-          body: JSON.stringify({ message: "__init__", feedId }),
-        });
-        const d = await initRes.json();
-        setMessages(d.messages || []);
-        if (d.feed?.criteria) {
-          setPrefs({ description: d.feed.description, criteria: d.feed.criteria });
-        }
-      } else {
-        setMessages(msgs);
-      }
+      // On a fresh feed (no history), don't pre-call the LLM — let the chat
+      // pane sit empty until the user types. The empty-state message tells
+      // them what to do.
+      setMessages(msgs);
     } catch { /* ignore */ }
     finally {
       setChatLoading(false);
@@ -577,20 +568,32 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
         setPrefs(p);
         checkNewFeed(p);
       }
-      // Live settings: the chat agent emits a cumulative FEED_CONFIG_JSON on
-      // every turn. When the resulting semantic_config has changed, push it
-      // into the FilterPanel and debounce-refresh the posts pane.
+      // Live settings: the chat agent emits cumulative FEED_CONFIG_JSON and
+      // MECHANICAL_FILTERS_JSON on every turn. When either has changed, push
+      // it into the FilterPanel and debounce-refresh the posts pane.
+      let configChanged = false;
       if (d.feed?.semantic_config) {
         const incomingJson = JSON.stringify(d.feed.semantic_config);
         if (incomingJson !== lastSemanticConfigJsonRef.current) {
           lastSemanticConfigJsonRef.current = incomingJson;
           setSemanticConfig(d.feed.semantic_config);
-          if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
-          postsDebounceRef.current = setTimeout(() => {
-            const fid = serverFeedIdRef.current;
-            if (fid) loadPosts(fid);
-          }, 600);
+          configChanged = true;
         }
+      }
+      if (d.feed?.mechanical_filters) {
+        const incomingJson = JSON.stringify(d.feed.mechanical_filters);
+        if (incomingJson !== lastMechanicalFiltersJsonRef.current) {
+          lastMechanicalFiltersJsonRef.current = incomingJson;
+          setMechanicalFilters(d.feed.mechanical_filters);
+          configChanged = true;
+        }
+      }
+      if (configChanged) {
+        if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
+        postsDebounceRef.current = setTimeout(() => {
+          const fid = serverFeedIdRef.current;
+          if (fid) loadPosts(fid);
+        }, 600);
       }
       // Last assistant turn produced new options the user hasn't seen yet —
       // flag the Chat tab on mobile if they're elsewhere.
@@ -616,6 +619,21 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
   function finalizeNow() {
     if (loading) return;
     send("Just go ahead and make my feed now with what you've got — pick reasonable defaults for anything we haven't covered yet.");
+  }
+
+  // "Help me build my prompt" — shortcut that sends a canned message asking
+  // Claude to switch into guided-question mode. Everything else is the
+  // system prompt's job; the client has no mode state.
+  function askForQuestions() {
+    if (loading) return;
+    send("Help me build my prompt — walk me through it step by step and ask me questions to figure out what I want.");
+  }
+
+  // "Cancel" — sent while Claude is asking numbered questions. Tells the
+  // model to drop the interview and go back to free-form chat.
+  function cancelQuestions() {
+    if (loading) return;
+    send("Cancel — stop with the questions, let me just chat freely.");
   }
 
   // Compose the chat reply from any selected options + the comment box.
@@ -648,6 +666,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setMobileTab("chat");
     setSidebarOpen(false);
     lastSemanticConfigJsonRef.current = "";
+    lastMechanicalFiltersJsonRef.current = "";
     setPrevCriteriaJson("");
 
     // Create a fresh server-side feed.
@@ -685,6 +704,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setActiveFeedId(feed.id);
     serverFeedIdRef.current = id;
     lastSemanticConfigJsonRef.current = "";
+    lastMechanicalFiltersJsonRef.current = "";
     // On mobile, jump to the Feed tab if the feed is already configured,
     // otherwise to Chat to resume the interview.
     const complete = feedIsComplete(feed);
@@ -712,6 +732,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
       serverFeedIdRef.current = null;
       setMobileTab("chat");
       lastSemanticConfigJsonRef.current = "";
+    lastMechanicalFiltersJsonRef.current = "";
     }
     setDeleteTarget(null);
   }
@@ -722,6 +743,7 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
     setShowImportMemory(false);
     setMobileTab("feed");
     lastSemanticConfigJsonRef.current = "";
+    lastMechanicalFiltersJsonRef.current = "";
     reloadFeeds();
     loadPosts(importedFeed.id);
   }
@@ -1371,6 +1393,12 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
             </div>
             <div className="cur-chat-area">
               <div className="cur-chat-inner">
+                {messages.length === 0 && !chatLoading && !loading && (
+                  <div className="cur-empty">
+                    <p>Describe your ideal feed</p>
+                    <p className="sub">a topic you&rsquo;re interested in, hobbies, etc.</p>
+                  </div>
+                )}
                 {messages.map((msg, i) => {
                   const isUser = msg.role === "user";
                   const parsed = !isUser ? parseMessage(msg.content) : null;
@@ -1450,6 +1478,39 @@ function CuratorApp({ profile }: { profile: UserProfile }) {
                   })}
                 </div>
               ) : null}
+              {!hasCriteria && (
+                <div className="cur-mode-row">
+                  {lastParsed?.options.length ? (
+                    <>
+                      <button
+                        type="button"
+                        className="cur-mode-toggle is-active"
+                        onClick={cancelQuestions}
+                        disabled={loading}
+                      >
+                        ✕ Cancel questions
+                      </button>
+                      <span className="cur-mode-hint">
+                        go back to free-form chat
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="cur-mode-toggle"
+                        onClick={askForQuestions}
+                        disabled={loading}
+                      >
+                        ✦ Help me build my prompt
+                      </button>
+                      <span className="cur-mode-hint">
+                        let Claude ask you step-by-step questions
+                      </span>
+                    </>
+                  )}
+                </div>
+              )}
               {showFinalize && (
                 <div className="cur-finalize-row">
                   <button

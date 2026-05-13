@@ -468,6 +468,43 @@
   color: var(--ink-3);
   font-style: italic;
 }
+.cur-mode-row{
+  max-width: 640px;
+  margin: 0 auto 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cur-mode-toggle{
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--rf-body);
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--hair);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.cur-mode-toggle:hover:not(:disabled){
+  border-color: var(--ink-2);
+  color: var(--ink-1);
+}
+.cur-mode-toggle:disabled{
+  opacity: 0.5; cursor: default;
+}
+.cur-mode-toggle.is-active{
+  border-color: rgba(62,138,108,0.4);
+  background: rgba(125,203,165,0.08);
+  color: var(--aurora-deep);
+}
+.cur-mode-hint{
+  font-family: var(--rf-body);
+  font-size: 12px;
+  color: var(--ink-3);
+  font-style: italic;
+}
 .cur-input-wrap{
   max-width: 640px;
   margin: 0 auto;

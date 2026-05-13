@@ -5,7 +5,7 @@ import type {
   SemanticConfig,
 } from "./types";
 import { withFeedConfigDefaults } from "./defaults";
-import { searchPosts } from "./vector-search";
+import { searchPosts, type SearchFilter } from "./vector-search";
 import { getSecret } from "./secrets";
 
 // --- Connection Pool ---
@@ -281,15 +281,35 @@ export async function deleteFeed(id: number): Promise<void> {
 // --- Posts ---
 // Posts come from a Vertex AI Vector Search index of Bluesky Jetstream
 // (the index lives in `amir-experimental`, fed by happy-feed's worker).
-// We embed the feed's name + topics + keywords + vibes with Gemini and
+// We embed the feed's topics + keywords + vibes with Gemini and
 // query the index directly — see src/lib/vector-search.ts.
+
+// Translate the LLM-controlled subset of MechanicalFilters into the Vertex
+// restricts SearchFilter shape. `post_type` "all" leaves the reply restrict
+// off so both replies and top-level posts come back.
+function mechanicalToSearchFilter(m?: MechanicalFilters): SearchFilter | undefined {
+  if (!m) return undefined;
+  const f: SearchFilter = {};
+  let any = false;
+  if (m.lang_allow?.length) { f.lang = m.lang_allow; any = true; }
+  if (m.post_type === "top_level") { f.isReply = false; any = true; }
+  if (m.post_type === "replies") { f.isReply = true; any = true; }
+  if (m.require_media) { f.hasImages = true; any = true; }
+  else if (m.exclude_media) { f.hasImages = false; any = true; }
+  if (m.require_link) { f.hasExternalLink = true; any = true; }
+  else if (m.exclude_links) { f.hasExternalLink = false; any = true; }
+  if (m.require_quote) { f.hasQuote = true; any = true; }
+  if (m.hashtag_include?.length) {
+    f.hashtags = m.hashtag_include.map((t) => t.toLowerCase());
+    any = true;
+  }
+  if (m.author_blocklist?.length) { f.didExclude = m.author_blocklist; any = true; }
+  return any ? f : undefined;
+}
 
 function buildSearchQuery(feed: DbFeed): string {
   const sc = feed.semantic_config || ({} as SemanticConfig);
   const parts: string[] = [];
-  if (feed.name && feed.name !== "New Feed" && feed.name !== "Untitled") {
-    parts.push(feed.name);
-  }
   if (sc.topics && sc.topics.length > 0) {
     parts.push(`Topics: ${sc.topics.join(", ")}`);
   }
@@ -339,9 +359,7 @@ export async function getFeedPreviewPosts(
   const queryText = buildSearchQuery(feed);
   if (!queryText) return [];
 
-  const filter = feed.mechanical_filters?.lang_allow?.length
-    ? { lang: feed.mechanical_filters.lang_allow }
-    : undefined;
+  const filter = mechanicalToSearchFilter(feed.mechanical_filters);
 
   try {
     const hits = await searchPosts({ query: queryText, k: limit, filter });
