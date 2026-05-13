@@ -8,9 +8,16 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
+import Script from "next/script";
 import "./search.css";
 import { authedFetch } from "@/lib/authed-fetch";
 import type { VectorHit } from "@/lib/vector-search";
+
+declare global {
+  interface Window {
+    bluesky?: { scan: (root?: Element | Document) => void };
+  }
+}
 
 // ---------- shared types ----------
 
@@ -48,14 +55,11 @@ interface RerankPhase {
   error?: string;
 }
 
-// ---------- helpers ----------
+// ---------- constants ----------
 
-function atUriToEmbedUrl(uri: string): string | null {
-  // at://did:plc:xxx/app.bsky.feed.post/rkey → https://embed.bsky.app/embed/did:plc:xxx/app.bsky.feed.post/rkey
-  const m = uri.match(/^at:\/\/([^/]+)\/(app\.bsky\.feed\.post)\/(.+)$/);
-  if (!m) return null;
-  return `https://embed.bsky.app/embed/${m[1]}/${m[2]}/${m[3]}`;
-}
+const ACTIVE_PROMPT_KEY = "search:activePromptId";
+
+// ---------- helpers ----------
 
 function atUriToBskyUrl(uri: string): string | null {
   const m = uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
@@ -76,47 +80,29 @@ function timeAgo(iso: string): string {
   return `${days}d ago`;
 }
 
-// ---------- bsky embed iframe with auto-resize ----------
+// ---------- bsky embed (script-injected, same approach as curator) ----------
 
 function BskyEmbed({ uri }: { uri: string }) {
-  const url = atUriToEmbedUrl(uri);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState<number>(180);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    function onMessage(ev: MessageEvent) {
-      if (typeof ev.data !== "object" || ev.data === null) return;
-      // Bluesky's embed posts { height: number } via postMessage.
-      const data = ev.data as { height?: unknown };
-      const h = typeof data.height === "number" ? data.height : null;
-      if (h && iframeRef.current && ev.source === iframeRef.current.contentWindow) {
-        setHeight(Math.max(180, Math.round(h)));
-      }
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
-  if (!url) {
-    return (
-      <div className="srch-embed-wrap" style={{ minHeight: 100 }}>
-        <div className="srch-embed-loading">unable to embed (post unavailable)</div>
-      </div>
-    );
-  }
-
+  const fallbackUrl = atUriToBskyUrl(uri);
+  // Bluesky's embed.js replaces the inner `.bluesky-embed` element with an
+  // iframe in place; keep the outer wrapper so our CSS overrides survive
+  // the transform.
   return (
-    <div className="srch-embed-wrap" style={{ minHeight: height }}>
-      {!loaded && <div className="srch-embed-loading">loading post…</div>}
-      <iframe
-        ref={iframeRef}
-        src={url}
-        style={{ height }}
-        onLoad={() => setLoaded(true)}
-        scrolling="no"
-        allowFullScreen
-      />
+    <div className="srch-embed-wrap">
+      <div
+        className="bluesky-embed"
+        data-bluesky-uri={uri}
+        data-bluesky-embed-color-mode="light"
+      >
+        <p className="srch-embed-loading">loading post…</p>
+        {fallbackUrl && (
+          <p>
+            <a href={fallbackUrl} target="_blank" rel="noopener noreferrer">
+              View on Bluesky
+            </a>
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -213,7 +199,9 @@ export default function SearchPage() {
   const [tab, setTab] = useState<"rerank" | "vector">("rerank");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // initial fetch: prompts + recent runs
+  // Initial fetch: prompts + recent runs. AuthGate (in the root layout)
+  // guarantees Firebase auth has settled before this component mounts, so
+  // authedFetch always has a valid token by the time we get here.
   useEffect(() => {
     (async () => {
       try {
@@ -225,7 +213,19 @@ export default function SearchPage() {
           const data = await pRes.json();
           const arr: RerankPrompt[] = data.prompts || [];
           setPrompts(arr);
-          if (arr.length > 0) setActivePromptId(arr[0].id);
+          let restored: string | null = null;
+          try {
+            const saved = localStorage.getItem(ACTIVE_PROMPT_KEY);
+            if (saved && arr.some((p) => p.id === saved)) restored = saved;
+          } catch {
+            /* ignore (Safari private mode) */
+          }
+          if (restored) {
+            setActivePromptId(restored);
+            setRerankEnabled(true);
+          } else {
+            setRerankEnabled(false);
+          }
         }
         if (rRes.ok) {
           const data = await rRes.json();
@@ -236,6 +236,19 @@ export default function SearchPage() {
       }
     })();
   }, []);
+
+  // Persist active prompt selection across reloads.
+  useEffect(() => {
+    try {
+      if (activePromptId) {
+        localStorage.setItem(ACTIVE_PROMPT_KEY, activePromptId);
+      } else {
+        localStorage.removeItem(ACTIVE_PROMPT_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [activePromptId]);
 
   // ⌘K / Ctrl-K to focus input
   useEffect(() => {
@@ -435,6 +448,16 @@ export default function SearchPage() {
 
   const rowsToRender = tab === "rerank" ? rerankedRows : vectorRows;
 
+  // Re-scan Bluesky embeds whenever the rendered rows change (script auto-scans
+  // on first load; manual rescans cover subsequent React rerenders).
+  useEffect(() => {
+    if (rowsToRender.length === 0) return;
+    const scan = () => window.bluesky?.scan?.();
+    scan();
+    const t = setTimeout(scan, 300);
+    return () => clearTimeout(t);
+  }, [rowsToRender]);
+
   const modelLabel = vectorPhase?.model ?? "claude-sonnet-4-6";
   const totalMs =
     rerankPhase?.ms.total ??
@@ -442,6 +465,11 @@ export default function SearchPage() {
 
   return (
     <div className="srch-shell">
+      <Script
+        src="https://embed.bsky.app/static/embed.js"
+        strategy="afterInteractive"
+        onLoad={() => window.bluesky?.scan?.()}
+      />
       {/* ── LEFT RAIL ── */}
       <aside className="srch-rail">
         <div className="srch-rail-head">
@@ -450,7 +478,7 @@ export default function SearchPage() {
 
         <div className="srch-section-label">Recent runs</div>
         {runs.length === 0 ? (
-          <div style={{ fontSize: 12, color: "var(--parchment-dim)" }}>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
             No runs yet.
           </div>
         ) : (
@@ -471,7 +499,7 @@ export default function SearchPage() {
 
         <div className="srch-section-label">Saved prompts</div>
         {prompts.length === 0 ? (
-          <div style={{ fontSize: 12, color: "var(--parchment-dim)" }}>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
             No prompts saved yet.
           </div>
         ) : (
@@ -481,7 +509,11 @@ export default function SearchPage() {
               className={`srch-prompt-item ${
                 activePromptId === p.id ? "active" : ""
               }`}
-              onClick={() => setActivePromptId(p.id)}
+              onClick={() => {
+                setActivePromptId(p.id);
+                setRerankEnabled(true);
+              }}
+              title="Activate this prompt"
             >
               <span>{p.name}</span>
               <span className="tag">v{p.current_version ?? 1}</span>
@@ -512,7 +544,19 @@ export default function SearchPage() {
             }}
             autoFocus
           />
-          <button onClick={runSearch} disabled={submitting || !query.trim()}>
+          <button
+            onClick={runSearch}
+            disabled={
+              submitting ||
+              !query.trim() ||
+              (rerankEnabled && !activePromptId)
+            }
+            title={
+              rerankEnabled && !activePromptId
+                ? "Reranker is on but no prompt is selected — create one in /search/prompts or turn the reranker off."
+                : undefined
+            }
+          >
             {submitting ? "Searching…" : "Search"}
           </button>
         </div>
@@ -606,7 +650,7 @@ export default function SearchPage() {
           <div
             style={{
               fontSize: 11,
-              color: "var(--parchment-dim)",
+              color: "var(--ink-3)",
               fontFamily: "var(--rf-mono)",
               marginTop: 4,
             }}
@@ -632,7 +676,7 @@ export default function SearchPage() {
           <div
             style={{
               fontSize: 11,
-              color: "var(--parchment-dim)",
+              color: "var(--ink-3)",
               fontFamily: "var(--rf-mono)",
               marginTop: 4,
             }}
@@ -643,7 +687,17 @@ export default function SearchPage() {
 
         <button
           className={`srch-toggle ${rerankEnabled ? "on" : ""}`}
-          onClick={() => setRerankEnabled((v) => !v)}
+          onClick={() => {
+            setRerankEnabled((v) => {
+              const next = !v;
+              // Turning on with no prompt selected → auto-pick the first
+              // saved prompt so the search button isn't immediately gated.
+              if (next && !activePromptId && prompts.length > 0) {
+                setActivePromptId(prompts[0].id);
+              }
+              return next;
+            });
+          }}
           type="button"
         >
           <span className="srch-toggle-label">Use reranker</span>
@@ -653,20 +707,21 @@ export default function SearchPage() {
         {rerankEnabled && (
           <>
             <div className="srch-section-label">Active prompt</div>
+            <select
+              className="srch-select"
+              value={activePromptId ?? ""}
+              onChange={(e) => setActivePromptId(e.target.value || null)}
+              disabled={prompts.length === 0}
+            >
+              <option value="">— none —</option>
+              {prompts.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} · v{p.current_version ?? 1}
+                </option>
+              ))}
+            </select>
             {activePrompt ? (
-              <div className="srch-prompt-preview">
-                <div className="srch-prompt-preview-head">
-                  <span>{activePrompt.name}</span>
-                  <span
-                    style={{
-                      color: "var(--parchment-dim)",
-                      fontFamily: "var(--rf-mono)",
-                      fontSize: 10,
-                    }}
-                  >
-                    v{activePrompt.current_version ?? 1}
-                  </span>
-                </div>
+              <div className="srch-prompt-preview" style={{ marginTop: 8 }}>
                 <div className="srch-prompt-preview-body">
                   {activePrompt.current_system_prompt}
                 </div>
@@ -678,14 +733,34 @@ export default function SearchPage() {
                   >
                     Edit
                   </Link>
+                  <Link
+                    href="/search/prompts"
+                    className="srch-link"
+                    style={{ marginTop: 0 }}
+                  >
+                    + New
+                  </Link>
                 </div>
               </div>
             ) : (
-              <div style={{ fontSize: 12, color: "var(--parchment-dim)" }}>
-                No prompt selected.{" "}
-                <Link href="/search/prompts" className="srch-link">
-                  Create one →
-                </Link>
+              <div
+                style={{
+                  marginTop: 8,
+                  fontSize: 12,
+                  color: "var(--ink-3)",
+                  lineHeight: 1.5,
+                }}
+              >
+                {prompts.length === 0 ? (
+                  <>
+                    No prompts saved.{" "}
+                    <Link href="/search/prompts" className="srch-link">
+                      Create one →
+                    </Link>
+                  </>
+                ) : (
+                  "Pick a prompt above to enable the reranker."
+                )}
               </div>
             )}
           </>
@@ -698,7 +773,7 @@ export default function SearchPage() {
           style={{
             fontFamily: "var(--rf-mono)",
             fontSize: 12,
-            color: "var(--mist)",
+            color: "var(--ink)",
             padding: "8px 12px",
             border: "1px solid var(--hair)",
             borderRadius: 6,
@@ -727,7 +802,7 @@ export default function SearchPage() {
               style={{
                 fontFamily: "var(--rf-mono)",
                 fontSize: 11.5,
-                color: "var(--parchment)",
+                color: "var(--ink-2)",
                 lineHeight: 1.7,
               }}
             >

@@ -235,7 +235,7 @@ function PromptsPageInner() {
         </div>
         <div className="srch-section-label">Your prompts</div>
         {prompts.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--parchment-dim)" }}>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
             No prompts yet.
           </div>
         )}
@@ -338,7 +338,7 @@ function PromptsPageInner() {
                       <span
                         style={{
                           fontSize: 11,
-                          color: "var(--aurora)",
+                          color: "var(--aurora-deep)",
                           fontFamily: "var(--rf-mono)",
                         }}
                       >

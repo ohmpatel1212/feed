@@ -323,6 +323,7 @@ export interface FeedPreviewPost {
   image_count: number;
   image_alts: string[];
   is_reply: boolean;
+  reply_parent_uri: string | null;
 }
 
 export async function getFeedPreviewPosts(
@@ -371,6 +372,7 @@ export async function getFeedPreviewPosts(
       image_count: h.image_count,
       image_alts: h.image_alts,
       is_reply: h.is_reply,
+      reply_parent_uri: h.reply_parent_uri,
     }));
   } catch (e) {
     // Vertex unreachable / IAM issue. Surface as empty so the UI shows its
