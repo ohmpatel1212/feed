@@ -108,7 +108,9 @@ export interface SearchFilter {
   selfLabelsDeny?: string[];
   minLikeCount?: number;
   minRepostCount?: number;
+  minReplyCount?: number;
   createdAfterUs?: number;
+  createdBeforeUs?: number;
 }
 
 // In-memory LRU cache for query embeddings. The embedding is a pure function
@@ -185,7 +187,9 @@ function buildNumericQueryRestricts(filter?: SearchFilter): NumericRestrict[] {
   if (!filter) return out;
   if (filter.minLikeCount !== undefined) out.push({ namespace: "like_count", valueInt: String(filter.minLikeCount), op: "GREATER_EQUAL" });
   if (filter.minRepostCount !== undefined) out.push({ namespace: "repost_count", valueInt: String(filter.minRepostCount), op: "GREATER_EQUAL" });
+  if (filter.minReplyCount !== undefined) out.push({ namespace: "reply_count", valueInt: String(filter.minReplyCount), op: "GREATER_EQUAL" });
   if (filter.createdAfterUs !== undefined) out.push({ namespace: "created_at_us", valueInt: String(filter.createdAfterUs), op: "GREATER_EQUAL" });
+  if (filter.createdBeforeUs !== undefined) out.push({ namespace: "created_at_us", valueInt: String(filter.createdBeforeUs), op: "LESS_EQUAL" });
   return out;
 }
 

@@ -944,10 +944,21 @@
   margin-left: auto;
   padding-top: 0;
 }
-/* Override Bluesky's 600px cap so embeds fill the post column on wide panes. */
-.cur-post-embed-wrap .bluesky-embed{
-  margin: 0 !important;
-  max-width: 100% !important;
+/* Bluesky's embed.js swaps the .bluesky-embed div for an iframe in place. We
+   override its 600px cap so embeds fill the post column, then `zoom` scales
+   the iframe contents (incl. font) down to a denser size. `zoom` scales the
+   layout box too, so there's no gap below the scaled element. */
+/* Cap at Bluesky's natural 600px so margin:auto has slack to center within the
+   wider post column. `zoom` scales contents (and layout box) to 85%, then the
+   block centers horizontally. */
+.cur-post-embed-wrap .bluesky-embed,
+.cur-post-embed-wrap iframe{
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 600px !important;
+  width: 100% !important;
+  zoom: 0.85;
 }
 .cur-post-reply-banner-embed{
   margin: 0 4px 6px;

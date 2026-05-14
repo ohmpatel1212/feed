@@ -31,6 +31,12 @@ export const DEFAULT_MECHANICAL_FILTERS: MechanicalFilters = {
   author_blocklist: [],
   author_max_per_hour: 0,
   block_labels: DEFAULT_SENSITIVE_LABELS,
+  min_like_count: 0,
+  min_repost_count: 0,
+  min_reply_count: 0,
+  time_window: "24h",
+  created_after_iso: "",
+  created_before_iso: "",
 };
 
 export const DEFAULT_SEMANTIC_CONFIG: SemanticConfig = {

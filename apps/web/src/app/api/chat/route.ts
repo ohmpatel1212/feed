@@ -92,6 +92,19 @@ Some preferences are about post *shape*, not topic. Do NOT add a question for th
 - Avoiding links — "no link spam", "no article shares", "hide links" — → **exclude_links: true**
 - Wanting quote posts — "quote-posts", "reacting to other posts" — → **require_quote: true**
 - Specific hashtags — "only #aiart posts" — → **hashtag_include: ["aiart"]** (lowercase, no \`#\`)
+- TIME WINDOW — how recent the posts should be. The default is "24h" (past 24 hours). Map phrasing:
+  - "last hour", "past hour" → **time_window: "1h"**
+  - "today", "past 24 hours", "in the last day", "fresh", "latest" → **time_window: "24h"**
+  - "this week", "past week", "last 7 days" → **time_window: "7d"**
+  - "this month", "past 30 days" → **time_window: "30d"**
+  - "all time", "any time", "old or new", "don't care about time" → **time_window: "all"**
+  - A specific date range ("between Jan 1 and Jan 15", "from 2026-03-01 to 2026-03-15") → **time_window: "custom"** with created_after_iso and created_before_iso set to the corresponding ISO timestamps (e.g. "2026-03-01T00:00:00Z"). Leave a bound empty if only one side is specified.
+- ENGAGEMENT / "hotness" — three independent minimums on like_count, repost_count, reply_count. Defaults are 0 (no filter). Map intent like so:
+  - "popular", "hot", "trending", "what's hot" → **min_like_count: 10, min_repost_count: 2, min_reply_count: 1**
+  - "viral", "blowing up", "really popular" → **min_like_count: 50, min_repost_count: 10, min_reply_count: 5**
+  - "high engagement", "lots of discussion", "actually being talked about" → **min_like_count: 10, min_repost_count: 2, min_reply_count: 5** (reply-weighted)
+  - "underrated", "small accounts", "low engagement", "from anyone" → reset all three to **0**
+  - Literal numbers from the user ("100+ likes", "at least 10 reposts") → respect them exactly.
 
 If the user contradicts an earlier structural preference, FLIP the field — don't keep stale values. When in doubt, lean toward acting: if a sentence sounds like a structural preference, it probably is one.
 
@@ -100,7 +113,7 @@ LIVE CONFIG — after EVERY assistant reply, append ALL THREE on their own lines
 ============================================================
 - FEED_NAME:Short Feed Name (2-4 words, punchy — e.g. "Indie Dev Underground", "NBA Brain", "AI Paper Trail"). Re-emit each turn; refine as you learn more.
 - FEED_CONFIG_JSON:{"topics":[...],"keywords":[...],"exclude_topics":[...],"exclude_keywords":[...],"vibes":"...","embedding_threshold":0.5,"judge_enabled":true,"judge_strictness":"moderate"}
-- MECHANICAL_FILTERS_JSON:{"post_type":"all","lang_allow":[],"require_media":false,"exclude_media":false,"require_video":false,"exclude_video":false,"require_link":false,"exclude_links":false,"require_quote":false,"hashtag_include":[]}
+- MECHANICAL_FILTERS_JSON:{"post_type":"all","lang_allow":[],"require_media":false,"exclude_media":false,"require_video":false,"exclude_video":false,"require_link":false,"exclude_links":false,"require_quote":false,"hashtag_include":[],"min_like_count":0,"min_repost_count":0,"min_reply_count":0,"time_window":"24h","created_after_iso":"","created_before_iso":""}
 
 Both JSON blocks must reflect your CURRENT BEST UNDERSTANDING — cumulative, not a delta. Always include EVERY field. Empty arrays / false / "all" are fine for fields the user hasn't touched. NEVER drop a value you previously inferred unless the user explicitly contradicts it.
 
@@ -258,6 +271,18 @@ export async function POST(req: NextRequest) {
           require_quote:
             pickScalar(incoming.require_quote, existing.require_quote) ?? false,
           hashtag_include: pickList(incoming.hashtag_include, existing.hashtag_include),
+          min_like_count:
+            pickScalar(incoming.min_like_count, existing.min_like_count) ?? 0,
+          min_repost_count:
+            pickScalar(incoming.min_repost_count, existing.min_repost_count) ?? 0,
+          min_reply_count:
+            pickScalar(incoming.min_reply_count, existing.min_reply_count) ?? 0,
+          time_window:
+            pickScalar(incoming.time_window, existing.time_window) ?? "24h",
+          created_after_iso:
+            pickScalar(incoming.created_after_iso, existing.created_after_iso) ?? "",
+          created_before_iso:
+            pickScalar(incoming.created_before_iso, existing.created_before_iso) ?? "",
         };
         console.log(
           `[chat] feedId=${feedId} mechanical_filters incoming=${JSON.stringify(incoming)} merged=${JSON.stringify(updates.mechanical_filters)}`

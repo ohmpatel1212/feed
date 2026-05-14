@@ -307,7 +307,48 @@ function mechanicalToSearchFilter(m?: MechanicalFilters): SearchFilter | undefin
   }
   if (m.author_blocklist?.length) { f.didExclude = m.author_blocklist; any = true; }
   if (m.block_labels?.length) { f.selfLabelsDeny = m.block_labels; any = true; }
+  if (m.min_like_count > 0) { f.minLikeCount = m.min_like_count; any = true; }
+  if (m.min_repost_count > 0) { f.minRepostCount = m.min_repost_count; any = true; }
+  if (m.min_reply_count > 0) { f.minReplyCount = m.min_reply_count; any = true; }
+
+  // Time window. Preset windows ("1h"/"24h"/"7d"/"30d") compute a relative
+  // lower bound from now. "custom" reads the two ISO timestamps and can set
+  // both bounds. "all" / undefined → no time filter.
+  const bounds = timeWindowToBounds(m);
+  if (bounds.afterUs !== undefined) { f.createdAfterUs = bounds.afterUs; any = true; }
+  if (bounds.beforeUs !== undefined) { f.createdBeforeUs = bounds.beforeUs; any = true; }
+
   return any ? f : undefined;
+}
+
+const PRESET_WINDOW_MS: Record<string, number> = {
+  "1h": 60 * 60 * 1000,
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
+function timeWindowToBounds(m: MechanicalFilters): {
+  afterUs?: number;
+  beforeUs?: number;
+} {
+  const window = m.time_window;
+  if (!window || window === "all") return {};
+  if (window === "custom") {
+    const out: { afterUs?: number; beforeUs?: number } = {};
+    if (m.created_after_iso) {
+      const t = Date.parse(m.created_after_iso);
+      if (!Number.isNaN(t)) out.afterUs = t * 1000;
+    }
+    if (m.created_before_iso) {
+      const t = Date.parse(m.created_before_iso);
+      if (!Number.isNaN(t)) out.beforeUs = t * 1000;
+    }
+    return out;
+  }
+  const delta = PRESET_WINDOW_MS[window];
+  if (!delta) return {};
+  return { afterUs: (Date.now() - delta) * 1000 };
 }
 
 function buildSearchQuery(feed: DbFeed): string {

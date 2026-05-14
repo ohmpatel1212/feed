@@ -21,7 +21,15 @@ export interface MechanicalFilters {
   author_blocklist: string[];     // DIDs — reject these authors
   author_max_per_hour: number;    // 0 = unlimited
   block_labels: string[];         // Bluesky self-labels to reject (e.g. ["porn","sexual","nudity","graphic-media"])
+  min_like_count: number;         // 0 = no filter — Vertex numeric_restrict on like_count
+  min_repost_count: number;       // 0 = no filter — Vertex numeric_restrict on repost_count
+  min_reply_count: number;        // 0 = no filter — Vertex numeric_restrict on reply_count
+  time_window: TimeWindow;        // "24h" = posts from the past 24h (default); "custom" uses the ISO bounds below
+  created_after_iso: string;      // only used when time_window === "custom"; empty = no lower bound
+  created_before_iso: string;     // only used when time_window === "custom"; empty = no upper bound
 }
+
+export type TimeWindow = "1h" | "24h" | "7d" | "30d" | "all" | "custom";
 
 // --- Semantic Config (Stage 2: embeddings + LLM judge) ---
 
