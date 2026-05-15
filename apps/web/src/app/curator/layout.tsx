@@ -203,7 +203,7 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
   function handleMemoryImported(importedFeed: {
     id: number;
     name: string;
-    description: string;
+    retrieval_query: string;
     criteria: FeedCriteria;
     created_at: string;
     updated_at: string;

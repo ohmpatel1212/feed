@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Script from "next/script";
 import VoiceCards, { type Voice } from "@/components/VoiceCards";
 import FilterPanel from "@/components/FilterPanel";
@@ -16,7 +16,7 @@ interface FeedCriteria {
   exclude_topics: string[]; exclude_keywords: string[];
   vibes: string;
 }
-interface Preferences { description: string; criteria: FeedCriteria; }
+interface Preferences { retrieval_query: string; criteria: FeedCriteria; }
 interface Post {
   uri: string;
   author_did: string;
@@ -97,6 +97,11 @@ function externalHost(url: string | null): string | null {
 type ViewMode = "card" | "embed";
 const VIEW_MODE_KEY = "curator:viewMode";
 const HIDE_UNAVAIL_KEY = "curator:hideUnavailable";
+const RERANK_KEY = (feedId: number) => `curator:rerank:${feedId}`;
+// How many posts to actually display per feed. Anything outside this window
+// (e.g. reranker rejected items) stays mounted but display:none to keep
+// Bluesky iframes alive across reranker toggles.
+const DISPLAY_K = 50;
 
 declare global {
   interface Window {
@@ -172,6 +177,30 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [postCount, setPostCount] = useState(0);
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsStage, setPostsStage] = useState<"idle" | "searching" | "ranking">("idle");
+
+  // Reranker state. `vectorOrder` and `rerankedOrder` are URI lists; `posts`
+  // holds the *union* of all posts referenced by either list so React keeps
+  // them mounted across toggles (the iframes inside the embed wraps stay
+  // alive even when their post falls out of the active top-50).
+  const [vectorOrder, setVectorOrder] = useState<string[]>([]);
+  const [rerankedOrder, setRerankedOrder] = useState<string[] | null>(null);
+  const [rerankAvailable, setRerankAvailable] = useState(false);
+  // The actual editorial paragraph the chat agent drafted, so the user
+  // can read it from the curator instead of querying the DB directly.
+  const [rerankPromptText, setRerankPromptText] = useState<string | null>(null);
+  const [useRerank, setUseRerankState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(RERANK_KEY(feedId)) === "1";
+  });
+  function setUseRerank(next: boolean) {
+    setUseRerankState(next);
+    try {
+      window.localStorage.setItem(RERANK_KEY(feedId), next ? "1" : "0");
+    } catch { /* ignore */ }
+  }
+  const [rerankPhase, setRerankPhase] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [rerankMs, setRerankMs] = useState<number | null>(null);
+  const [rerankError, setRerankError] = useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const [prevCriteriaJson, setPrevCriteriaJson] = useState("");
@@ -219,9 +248,11 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       const data = await res.json();
       const msgs: Message[] = data.messages || [];
       if (data.feed?.criteria) {
-        setPrefs({ description: data.feed.description, criteria: data.feed.criteria });
+        setPrefs({ retrieval_query: data.feed.retrieval_query, criteria: data.feed.criteria });
         setPrevCriteriaJson(JSON.stringify(data.feed.criteria));
       }
+      setRerankAvailable(!!data.feed?.rerank_prompt);
+      setRerankPromptText(data.feed?.rerank_prompt ?? null);
       setMessages(msgs);
     } catch { /* ignore */ }
     finally {
@@ -229,30 +260,143 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     }
   }, []);
 
-  const loadPosts = useCallback(async (id: number) => {
+  const loadPosts = useCallback(async (id: number, opts?: { rerank?: boolean }) => {
+    const wantsRerank = !!opts?.rerank;
     setPostsLoading(true);
-    setPostsStage("searching");
+    setPostsStage(wantsRerank ? "searching" : "searching");
+    setRerankError(null);
+    if (!wantsRerank) {
+      // Plain JSON path — clear any prior rerank state so the curator falls
+      // straight back to vector-only ordering on the next render.
+      setRerankPhase("idle");
+      setRerankMs(null);
+      setRerankedOrder(null);
+    }
     try {
-      const res = await authedFetch(`/api/feed-preview?feedId=${id}`);
-      const d = await res.json();
-      const nextCount = d.total_stored || (d.posts?.length ?? 0);
-      setPosts(d.posts || []);
-      setPostCount(nextCount);
-      setActivePostCount(nextCount);
-      if (d.mechanical_filters) setMechanicalFilters(d.mechanical_filters);
-      if (d.semantic_config) setSemanticConfig(d.semantic_config);
-    } catch { /* ignore */ }
-    finally {
+      const url = wantsRerank
+        ? `/api/feed-preview?feedId=${id}&rerank=1`
+        : `/api/feed-preview?feedId=${id}`;
+      const res = await authedFetch(url);
+      const ct = res.headers.get("content-type") ?? "";
+
+      if (ct.includes("ndjson") && res.body) {
+        // Streaming path — two NDJSON lines, phase=vector then phase=rerank.
+        setRerankPhase("running");
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let obj: Record<string, unknown>;
+            try { obj = JSON.parse(line); } catch { continue; }
+            if (obj.phase === "vector") {
+              const phasePosts = (obj.posts as Post[]) || [];
+              const phaseOrder = (obj.vectorOrder as string[]) || [];
+              setPosts(phasePosts);
+              setVectorOrder(phaseOrder);
+              setRerankedOrder(null);
+              setPostCount(phasePosts.length);
+              setActivePostCount(phasePosts.length);
+              if (obj.mechanical_filters) setMechanicalFilters(obj.mechanical_filters as MechanicalFilters);
+              if (obj.semantic_config) setSemanticConfig(obj.semantic_config as SemanticConfig);
+              // Phase 1 done — let the user see results while phase 2 runs.
+              setPostsLoading(false);
+              setPostsStage("ranking");
+            } else if (obj.phase === "rerank") {
+              if (obj.error) {
+                setRerankError(String(obj.error));
+                setRerankPhase("error");
+              } else {
+                const extra = (obj.additionalPosts as Post[]) || [];
+                if (extra.length > 0) {
+                  setPosts((prev) => {
+                    const seen = new Set(prev.map((p) => p.uri));
+                    return [...prev, ...extra.filter((p) => !seen.has(p.uri))];
+                  });
+                }
+                setRerankedOrder((obj.rerankedOrder as string[]) || []);
+                setRerankMs(typeof obj.ms_rerank === "number" ? obj.ms_rerank : null);
+                setRerankPhase("done");
+              }
+              setPostsStage("idle");
+            }
+          }
+        }
+      } else {
+        // Plain JSON path.
+        const d = await res.json();
+        const nextCount = d.total_stored || (d.posts?.length ?? 0);
+        const list = (d.posts as Post[]) || [];
+        setPosts(list);
+        setVectorOrder(list.map((p) => p.uri));
+        setRerankedOrder(null);
+        setPostCount(nextCount);
+        setActivePostCount(nextCount);
+        if (d.mechanical_filters) setMechanicalFilters(d.mechanical_filters);
+        if (d.semantic_config) setSemanticConfig(d.semantic_config);
+        setPostsLoading(false);
+        setPostsStage("idle");
+      }
+    } catch (e) {
+      setRerankError(e instanceof Error ? e.message : String(e));
+    } finally {
       setPostsLoading(false);
       setPostsStage("idle");
     }
   }, [setActivePostCount]);
 
   // On mount (i.e. on feed switch via URL change), hydrate chat + posts.
+  // Initial post load is always plain JSON (cheap, vector-only). If the user
+  // has rerank enabled for this feed and the feed has a rerank_prompt, a
+  // separate effect below upgrades to streaming once loadChat reveals that.
   useEffect(() => {
     loadChat(feedId);
     loadPosts(feedId);
   }, [feedId, loadChat, loadPosts]);
+
+  // After chat loads we know rerankAvailable. If the user wants rerank and
+  // we don't yet have a reranked order for this feed, fire the streaming
+  // /api/feed-preview?rerank=1. Guards prevent double-fetching when this
+  // effect re-runs (e.g. after rerankedOrder is set).
+  const rerankInFlight = useRef(false);
+  useEffect(() => {
+    if (!useRerank || !rerankAvailable) return;
+    if (rerankedOrder !== null) return;
+    if (rerankInFlight.current) return;
+    rerankInFlight.current = true;
+    loadPosts(feedId, { rerank: true }).finally(() => {
+      rerankInFlight.current = false;
+    });
+  }, [feedId, useRerank, rerankAvailable, rerankedOrder, loadPosts]);
+
+  // Active ordering — vector by default, reranked if the user opted in and
+  // we have rerank results. The orderMap is rebuilt only when the active
+  // ordering changes; everything else (display:none toggles, post sort)
+  // derives from it.
+  const orderMap = useMemo(() => {
+    const active = useRerank && rerankedOrder ? rerankedOrder : vectorOrder;
+    const m = new Map<string, number>();
+    active.forEach((uri, i) => m.set(uri, i));
+    return m;
+  }, [useRerank, rerankedOrder, vectorOrder]);
+
+  // Sorted union — same React keys across toggles, just reordered. React
+  // moves the existing DOM nodes instead of remounting, so the iframes
+  // inside the embed wraps survive a rerank toggle.
+  const sortedPosts = useMemo(() => {
+    return [...posts].sort((a, b) => {
+      const ra = orderMap.get(a.uri) ?? Number.POSITIVE_INFINITY;
+      const rb = orderMap.get(b.uri) ?? Number.POSITIVE_INFINITY;
+      return ra - rb;
+    });
+  }, [posts, orderMap]);
 
   // Watch for new criteria from the chat agent → refresh sidebar + show voices.
   const checkNewFeed = useCallback((newPrefs: Preferences) => {
@@ -269,18 +413,22 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Re-scan Bluesky embeds when the visible post set changes.
+  // Re-scan Bluesky embeds when the visible post set changes. We scan
+  // regardless of viewMode because both Card and Embed wraps are always
+  // mounted (see render-union below) — the embed placeholders just live
+  // under a display:none ancestor when the user is viewing cards. The
+  // bluesky widget's querySelectorAll still finds them and hydrates the
+  // iframes once, so toggling viewMode never re-fetches from
+  // embed.bsky.app.
   useEffect(() => {
-    if (viewMode !== "embed") return;
     const scan = () => window.bluesky?.scan?.();
     scan();
     const t = setTimeout(scan, 300);
     return () => clearTimeout(t);
-  }, [viewMode, posts, hideUnavailable, unavailableUris]);
+  }, [posts, hideUnavailable, unavailableUris]);
 
   // Detect unavailable posts via the public AT Proto API.
   useEffect(() => {
-    if (viewMode !== "embed") return;
     if (posts.length === 0) return;
 
     const ac = new AbortController();
@@ -356,9 +504,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       const msgs = d.messages || [];
       setMessages(msgs);
       if (d.feed?.criteria) {
-        const p = { description: d.feed.description, criteria: d.feed.criteria };
+        const p = { retrieval_query: d.feed.retrieval_query, criteria: d.feed.criteria };
         setPrefs(p);
         checkNewFeed(p);
+      }
+      // Reranker availability flips on as soon as the chat agent drafts
+      // a rerank_prompt — usually on the very first turn. Without this
+      // line the toggle would stay disabled until the user navigates
+      // away and back, because rerankAvailable is only set on mount.
+      if (d.feed) {
+        setRerankAvailable(!!d.feed.rerank_prompt);
+        setRerankPromptText(d.feed.rerank_prompt ?? null);
       }
       let configChanged = false;
       if (d.feed?.semantic_config) {
@@ -522,16 +678,49 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                 </span>
               </label>
             )}
+            <label
+              className="cur-rerank-toggle"
+              title={
+                rerankAvailable
+                  ? "Re-rank vector top-200 with Claude, using the editorial prompt this feed's chat agent drafted"
+                  : "The chat agent hasn't drafted a rerank prompt for this feed yet"
+              }
+              aria-disabled={!rerankAvailable}
+              style={{ opacity: rerankAvailable ? 1 : 0.4 }}
+            >
+              <input
+                type="checkbox"
+                checked={useRerank && rerankAvailable}
+                disabled={!rerankAvailable}
+                onChange={(e) => setUseRerank(e.target.checked)}
+              />
+              <span>Reranker</span>
+            </label>
             <button
               type="button"
               className="cur-refresh"
               disabled={postsLoading}
-              onClick={() => loadPosts(feedId)}
+              onClick={() => loadPosts(feedId, { rerank: useRerank && rerankAvailable })}
               title="Refresh posts"
             >
               ↻ Refresh
             </button>
           </div>
+          {useRerank && rerankAvailable && rerankPhase === "running" && (
+            <div className="cur-rerank-pill">
+              <span className="pulse-dot" /> Reranking with Claude…
+            </div>
+          )}
+          {useRerank && rerankAvailable && rerankPhase === "done" && rerankMs !== null && (
+            <div className="cur-rerank-pill done">
+              Reranked · {rerankMs}ms
+            </div>
+          )}
+          {useRerank && rerankAvailable && rerankPhase === "error" && (
+            <div className="cur-rerank-pill error" title={rerankError ?? undefined}>
+              Reranker failed — showing vector order
+            </div>
+          )}
           <div className="cur-feed-posts-inner">
             {posts.length === 0 ? (
               <div className="cur-empty">
@@ -548,8 +737,8 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </>
                 )}
               </div>
-            ) : viewMode === "embed" ? (
-              posts.map((post) => {
+            ) : (
+              sortedPosts.map((post) => {
                 const bskyUrl = (() => {
                   const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
                   return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
@@ -557,72 +746,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                 const replyParentUrl = (() => {
                   if (!post.reply_parent_uri) return null;
                   const m = post.reply_parent_uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                  return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                })();
-                if (hideUnavailable && unavailableUris.has(post.uri)) {
-                  return null;
-                }
-                return (
-                  <div
-                    key={post.uri}
-                    className="cur-post-embed-wrap"
-                    data-bsky-uri={post.uri}
-                  >
-                    {post.is_reply && (
-                      <div className="cur-post-reply-banner cur-post-reply-banner-embed">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <polyline points="9 17 4 12 9 7" />
-                          <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-                        </svg>
-                        {replyParentUrl ? (
-                          <a href={replyParentUrl} target="_blank" rel="noopener noreferrer">
-                            Replying to a post
-                          </a>
-                        ) : (
-                          <span>Reply</span>
-                        )}
-                      </div>
-                    )}
-                    <div className="cur-post-embed-meta">
-                      <span
-                        className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
-                        title="Match score"
-                      >
-                        {(post.score * 100).toFixed(0)}%
-                      </span>
-                      {bskyUrl && (
-                        <a
-                          href={bskyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="cur-post-open"
-                          title="Open in Bluesky"
-                        >
-                          Open ↗
-                        </a>
-                      )}
-                    </div>
-                    <div
-                      className="bluesky-embed"
-                      data-bluesky-uri={post.uri}
-                      data-bluesky-embed-color-mode="light"
-                    >
-                      <p>{post.text}</p>
-                      {bskyUrl && (
-                        <p>
-                          <a href={bskyUrl} target="_blank" rel="noopener noreferrer">
-                            View on Bluesky
-                          </a>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              posts.map((post) => {
-                const bskyUrl = (() => {
-                  const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
                   return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
                 })();
                 const profileUrl = post.author_handle
@@ -637,174 +760,247 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   ? `@${post.author_handle}`
                   : post.author_did.slice(0, 20) + "…";
                 const extHost = externalHost(post.external_uri);
-                const replyParentUrl = (() => {
-                  if (!post.reply_parent_uri) return null;
-                  const m = post.reply_parent_uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                  return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                })();
+
+                // Both wraps stay mounted; only one is visible. display:none on the
+                // inactive wrap is what stops Bluesky's iframe from being destroyed
+                // when the user toggles to Cards (the iframe is a child of the embed
+                // wrap, so unmounting the wrap killed it; CSS-hiding leaves it alive).
+                const embedHiddenByUnavail = hideUnavailable && unavailableUris.has(post.uri);
+                const showEmbed = viewMode === "embed" && !embedHiddenByUnavail;
+                const showCard = viewMode === "card";
+
+                // Render-union: a post that's in the fetched union but
+                // outside the active top-50 ordering stays mounted (so its
+                // iframe never reloads on a future toggle) but is hidden.
+                const rank = orderMap.get(post.uri);
+                const inActiveTop = rank !== undefined && rank < DISPLAY_K;
+
                 return (
-                  <article key={post.uri} className="cur-post-card">
-                    {post.is_reply && (
-                      <div className="cur-post-reply-banner">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <polyline points="9 17 4 12 9 7" />
-                          <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-                        </svg>
-                        {replyParentUrl ? (
-                          <a href={replyParentUrl} target="_blank" rel="noopener noreferrer">
-                            Replying to a post
+                  <div
+                    key={post.uri}
+                    className="cur-post-slot"
+                    style={{ display: inActiveTop ? undefined : "none" }}
+                  >
+                    <div
+                      className="cur-post-embed-wrap"
+                      data-bsky-uri={post.uri}
+                      style={{ display: showEmbed ? undefined : "none" }}
+                    >
+                      {post.is_reply && (
+                        <div className="cur-post-reply-banner cur-post-reply-banner-embed">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <polyline points="9 17 4 12 9 7" />
+                            <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+                          </svg>
+                          {replyParentUrl ? (
+                            <a href={replyParentUrl} target="_blank" rel="noopener noreferrer">
+                              Replying to a post
+                            </a>
+                          ) : (
+                            <span>Reply</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="cur-post-embed-meta">
+                        <span
+                          className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
+                          title="Match score"
+                        >
+                          {(post.score * 100).toFixed(0)}%
+                        </span>
+                        {bskyUrl && (
+                          <a
+                            href={bskyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="cur-post-open"
+                            title="Open in Bluesky"
+                          >
+                            Open ↗
                           </a>
-                        ) : (
-                          <span>Reply</span>
                         )}
                       </div>
-                    )}
-                    <header className="cur-post-card-head">
-                      <a
-                        href={profileUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="cur-post-avatar"
-                        aria-label={`Open ${displayName} on Bluesky`}
+                      <div
+                        className="bluesky-embed"
+                        data-bluesky-uri={post.uri}
+                        data-bluesky-embed-color-mode="light"
                       >
-                        {avatar ? (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            src={avatar}
-                            alt=""
-                            referrerPolicy="no-referrer"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <span className="cur-post-avatar-fallback" aria-hidden>
-                            {(displayName[0] || "?").toUpperCase()}
-                          </span>
+                        <p>{post.text}</p>
+                        {bskyUrl && (
+                          <p>
+                            <a href={bskyUrl} target="_blank" rel="noopener noreferrer">
+                              View on Bluesky
+                            </a>
+                          </p>
                         )}
-                      </a>
-                      <div className="cur-post-author">
+                      </div>
+                    </div>
+                    <article
+                      className="cur-post-card"
+                      style={{ display: showCard ? undefined : "none" }}
+                    >
+                      {post.is_reply && (
+                        <div className="cur-post-reply-banner">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <polyline points="9 17 4 12 9 7" />
+                            <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+                          </svg>
+                          {replyParentUrl ? (
+                            <a href={replyParentUrl} target="_blank" rel="noopener noreferrer">
+                              Replying to a post
+                            </a>
+                          ) : (
+                            <span>Reply</span>
+                          )}
+                        </div>
+                      )}
+                      <header className="cur-post-card-head">
                         <a
                           href={profileUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="cur-post-name"
+                          className="cur-post-avatar"
+                          aria-label={`Open ${displayName} on Bluesky`}
                         >
-                          {displayName}
+                          {avatar ? (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img
+                              src={avatar}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <span className="cur-post-avatar-fallback" aria-hidden>
+                              {(displayName[0] || "?").toUpperCase()}
+                            </span>
+                          )}
                         </a>
-                        <span className="cur-post-meta">
+                        <div className="cur-post-author">
                           <a
                             href={profileUrl}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="cur-post-handle"
+                            className="cur-post-name"
                           >
-                            {handleLabel}
+                            {displayName}
                           </a>
-                          <span className="cur-post-meta-sep" aria-hidden>·</span>
-                          <time
-                            className="cur-post-time"
-                            dateTime={post.indexed_at}
-                            title={formatAbsoluteTime(post.indexed_at)}
-                          >
-                            {formatRelativeTime(post.indexed_at)}
-                          </time>
-                        </span>
-                      </div>
-                      <span
-                        className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
-                        title="Match score"
-                      >
-                        {(post.score * 100).toFixed(0)}%
-                      </span>
-                    </header>
-
-                    <div className="cur-post-card-body">{post.text}</div>
-
-                    {post.external_uri && (
-                      <a
-                        className="cur-post-embed"
-                        href={post.external_uri}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <div className="cur-post-embed-host">{extHost || "link"}</div>
-                        {post.external_title && (
-                          <div className="cur-post-embed-title">{post.external_title}</div>
-                        )}
-                        {post.external_desc && (
-                          <div className="cur-post-embed-desc">{post.external_desc}</div>
-                        )}
-                      </a>
-                    )}
-
-                    {post.quote_uri && !post.external_uri && (
-                      <a
-                        className="cur-post-embed quote"
-                        href={(() => {
-                          const m = post.quote_uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                          return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : "#";
-                        })()}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        <div className="cur-post-embed-host">↳ quoted post</div>
-                        <div className="cur-post-embed-desc">Open on Bluesky to view the quoted post.</div>
-                      </a>
-                    )}
-
-                    {post.has_images && post.image_count > 0 && (
-                      <div className="cur-post-images-note">
-                        {post.image_count} image{post.image_count === 1 ? "" : "s"}
-                        {post.image_alts.filter(Boolean).length > 0 && (
-                          <span className="cur-post-images-alt">
-                            {" — "}
-                            {post.image_alts.filter(Boolean).join(" · ")}
+                          <span className="cur-post-meta">
+                            <a
+                              href={profileUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="cur-post-handle"
+                            >
+                              {handleLabel}
+                            </a>
+                            <span className="cur-post-meta-sep" aria-hidden>·</span>
+                            <time
+                              className="cur-post-time"
+                              dateTime={post.indexed_at}
+                              title={formatAbsoluteTime(post.indexed_at)}
+                            >
+                              {formatRelativeTime(post.indexed_at)}
+                            </time>
                           </span>
-                        )}
-                      </div>
-                    )}
+                        </div>
+                        <span
+                          className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
+                          title="Match score"
+                        >
+                          {(post.score * 100).toFixed(0)}%
+                        </span>
+                      </header>
 
-                    <footer className="cur-post-stats">
-                      <span className="cur-post-stat" title="Replies">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-                        </svg>
-                        {formatCount(post.reply_count)}
-                      </span>
-                      <span className="cur-post-stat" title="Reposts">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <polyline points="17 1 21 5 17 9" />
-                          <path d="M3 11V9a4 4 0 0 1 4-4h14" />
-                          <polyline points="7 23 3 19 7 15" />
-                          <path d="M21 13v2a4 4 0 0 1-4 4H3" />
-                        </svg>
-                        {formatCount(post.repost_count)}
-                      </span>
-                      <span className="cur-post-stat" title="Likes">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                        </svg>
-                        {formatCount(post.like_count)}
-                      </span>
-                      <span className="cur-post-stat" title="Quotes">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <path d="M3 21c3 0 5-2 5-5V7H3v8h4" />
-                          <path d="M14 21c3 0 5-2 5-5V7h-5v8h4" />
-                        </svg>
-                        {formatCount(post.quote_count)}
-                      </span>
-                      {bskyUrl && (
+                      <div className="cur-post-card-body">{post.text}</div>
+
+                      {post.external_uri && (
                         <a
-                          href={bskyUrl}
+                          className="cur-post-embed"
+                          href={post.external_uri}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="cur-post-open"
-                          title="Open in Bluesky"
                         >
-                          Open ↗
+                          <div className="cur-post-embed-host">{extHost || "link"}</div>
+                          {post.external_title && (
+                            <div className="cur-post-embed-title">{post.external_title}</div>
+                          )}
+                          {post.external_desc && (
+                            <div className="cur-post-embed-desc">{post.external_desc}</div>
+                          )}
                         </a>
                       )}
-                    </footer>
-                  </article>
+
+                      {post.quote_uri && !post.external_uri && (
+                        <a
+                          className="cur-post-embed quote"
+                          href={(() => {
+                            const m = post.quote_uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
+                            return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : "#";
+                          })()}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <div className="cur-post-embed-host">↳ quoted post</div>
+                          <div className="cur-post-embed-desc">Open on Bluesky to view the quoted post.</div>
+                        </a>
+                      )}
+
+                      {post.has_images && post.image_count > 0 && (
+                        <div className="cur-post-images-note">
+                          {post.image_count} image{post.image_count === 1 ? "" : "s"}
+                          {post.image_alts.filter(Boolean).length > 0 && (
+                            <span className="cur-post-images-alt">
+                              {" — "}
+                              {post.image_alts.filter(Boolean).join(" · ")}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <footer className="cur-post-stats">
+                        <span className="cur-post-stat" title="Replies">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                          </svg>
+                          {formatCount(post.reply_count)}
+                        </span>
+                        <span className="cur-post-stat" title="Reposts">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <polyline points="17 1 21 5 17 9" />
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                            <polyline points="7 23 3 19 7 15" />
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+                          </svg>
+                          {formatCount(post.repost_count)}
+                        </span>
+                        <span className="cur-post-stat" title="Likes">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                          </svg>
+                          {formatCount(post.like_count)}
+                        </span>
+                        <span className="cur-post-stat" title="Quotes">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M3 21c3 0 5-2 5-5V7H3v8h4" />
+                            <path d="M14 21c3 0 5-2 5-5V7h-5v8h4" />
+                          </svg>
+                          {formatCount(post.quote_count)}
+                        </span>
+                        {bskyUrl && (
+                          <a
+                            href={bskyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="cur-post-open"
+                            title="Open in Bluesky"
+                          >
+                            Open ↗
+                          </a>
+                        )}
+                      </footer>
+                    </article>
+                  </div>
                 );
               })
             )}
@@ -1027,6 +1223,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           postCount={postCount}
           rightPane={rightPane}
           onRightPaneChange={setRightPane}
+          rerankPrompt={rerankPromptText}
           style={{ ["--cur-right-w" as string]: `${rightWidth}px` }}
         />
       </div>

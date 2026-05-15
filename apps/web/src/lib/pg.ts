@@ -5,7 +5,7 @@ import type {
   SemanticConfig,
 } from "./types";
 import { withFeedConfigDefaults } from "./defaults";
-import { searchPosts, type SearchFilter } from "./vector-search";
+import { searchPosts, type SearchFilter, type VectorHit } from "./vector-search";
 import { getSecret } from "./secrets";
 
 // --- Connection Pool ---
@@ -147,7 +147,12 @@ export interface DbFeed {
   id: number;
   user_id: string;
   name: string;
-  description: string;
+  // Derived chip-row label (topics + keywords + vibes), shown in the UI.
+  // The actual text sent to Vertex is built fresh on read by buildSearchQuery().
+  retrieval_query: string;
+  // Editorial system prompt for the Claude reranker. Null until the chat
+  // agent drafts one — toggle in the curator stays disabled while null.
+  rerank_prompt: string | null;
   mechanical_filters: MechanicalFilters;
   semantic_config: SemanticConfig;
   published_rkey: string | null;
@@ -161,7 +166,8 @@ interface DbFeedRow {
   id: number;
   user_id: string;
   name: string;
-  description: string;
+  retrieval_query: string;
+  rerank_prompt: string | null;
   mechanical_filters: MechanicalFilters | string;
   semantic_config: SemanticConfig | string;
   published_rkey: string | null;
@@ -241,7 +247,8 @@ export async function updateFeed(
   id: number,
   updates: {
     name?: string;
-    description?: string;
+    retrieval_query?: string;
+    rerank_prompt?: string | null;
     mechanical_filters?: MechanicalFilters;
     semantic_config?: SemanticConfig;
     published_rkey?: string;
@@ -254,14 +261,15 @@ export async function updateFeed(
 
   const res = await query(
     `UPDATE feeds SET
-       name = $1, description = $2,
-       mechanical_filters = $3, semantic_config = $4,
-       published_rkey = $5, is_active = $6, color = $7,
+       name = $1, retrieval_query = $2, rerank_prompt = $3,
+       mechanical_filters = $4, semantic_config = $5,
+       published_rkey = $6, is_active = $7, color = $8,
        updated_at = now()
-     WHERE id = $8 RETURNING *`,
+     WHERE id = $9 RETURNING *`,
     [
       updates.name ?? feed.name,
-      updates.description ?? feed.description,
+      updates.retrieval_query ?? feed.retrieval_query,
+      updates.rerank_prompt !== undefined ? updates.rerank_prompt : feed.rerank_prompt,
       JSON.stringify(updates.mechanical_filters ?? feed.mechanical_filters),
       JSON.stringify(updates.semantic_config ?? feed.semantic_config),
       updates.published_rkey ?? feed.published_rkey,
@@ -287,7 +295,7 @@ export async function deleteFeed(id: number): Promise<void> {
 // Translate the LLM-controlled subset of MechanicalFilters into the Vertex
 // restricts SearchFilter shape. `post_type` "all" leaves the reply restrict
 // off so both replies and top-level posts come back.
-function mechanicalToSearchFilter(m?: MechanicalFilters): SearchFilter | undefined {
+export function mechanicalToSearchFilter(m?: MechanicalFilters): SearchFilter | undefined {
   if (!m) return undefined;
   const f: SearchFilter = {};
   let any = false;
@@ -351,7 +359,7 @@ function timeWindowToBounds(m: MechanicalFilters): {
   return { afterUs: (Date.now() - delta) * 1000 };
 }
 
-function buildSearchQuery(feed: DbFeed): string {
+export function buildSearchQuery(feed: DbFeed): string {
   const sc = feed.semantic_config || ({} as SemanticConfig);
   const parts: string[] = [];
   if (sc.topics && sc.topics.length > 0) {
@@ -390,6 +398,32 @@ export interface FeedPreviewPost {
   reply_parent_uri: string | null;
 }
 
+export function vectorHitToFeedPost(h: VectorHit): FeedPreviewPost {
+  return {
+    uri: h.uri,
+    text: h.text,
+    author_did: h.did,
+    author_handle: h.author_handle,
+    author_display_name: h.author_display_name,
+    author_avatar_cid: h.author_avatar_cid,
+    score: h.vector_score,
+    indexed_at: h.created_at,
+    like_count: h.like_count ?? 0,
+    repost_count: h.repost_count ?? 0,
+    reply_count: h.reply_count ?? 0,
+    quote_count: h.quote_count ?? 0,
+    external_uri: h.external_uri,
+    external_title: h.external_title,
+    external_desc: h.external_desc,
+    quote_uri: h.quote_uri,
+    has_images: h.has_images,
+    image_count: h.image_count,
+    image_alts: h.image_alts,
+    is_reply: h.is_reply,
+    reply_parent_uri: h.reply_parent_uri,
+  };
+}
+
 export async function getFeedPreviewPosts(
   feedId: number,
   limit: number = 25
@@ -413,29 +447,7 @@ export async function getFeedPreviewPosts(
         `searchPosts=${(tSearch - tFeed).toFixed(0)}ms ` +
         `total=${(tSearch - t0).toFixed(0)}ms feedId=${feedId} hits=${hits.length}`
     );
-    return hits.map((h) => ({
-      uri: h.uri,
-      text: h.text,
-      author_did: h.did,
-      author_handle: h.author_handle,
-      author_display_name: h.author_display_name,
-      author_avatar_cid: h.author_avatar_cid,
-      score: h.vector_score,
-      indexed_at: h.created_at,
-      like_count: h.like_count ?? 0,
-      repost_count: h.repost_count ?? 0,
-      reply_count: h.reply_count ?? 0,
-      quote_count: h.quote_count ?? 0,
-      external_uri: h.external_uri,
-      external_title: h.external_title,
-      external_desc: h.external_desc,
-      quote_uri: h.quote_uri,
-      has_images: h.has_images,
-      image_count: h.image_count,
-      image_alts: h.image_alts,
-      is_reply: h.is_reply,
-      reply_parent_uri: h.reply_parent_uri,
-    }));
+    return hits.map(vectorHitToFeedPost);
   } catch (e) {
     // Vertex unreachable / IAM issue. Surface as empty so the UI shows its
     // "no posts yet" state instead of a 500.

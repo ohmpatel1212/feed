@@ -5,7 +5,7 @@ import { useState, useRef } from "react";
 interface Feed {
   id: number;
   name: string;
-  description: string;
+  retrieval_query: string;
   criteria: {
     topics: string[];
     keywords: string[];

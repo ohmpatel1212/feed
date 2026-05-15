@@ -109,15 +109,20 @@ Some preferences are about post *shape*, not topic. Do NOT add a question for th
 If the user contradicts an earlier structural preference, FLIP the field — don't keep stale values. When in doubt, lean toward acting: if a sentence sounds like a structural preference, it probably is one.
 
 ============================================================
-LIVE CONFIG — after EVERY assistant reply, append ALL THREE on their own lines:
+LIVE CONFIG — after EVERY assistant reply, append ALL FOUR on their own lines:
 ============================================================
 - FEED_NAME:Short Feed Name (2-4 words, punchy — e.g. "Indie Dev Underground", "NBA Brain", "AI Paper Trail"). Re-emit each turn; refine as you learn more.
 - FEED_CONFIG_JSON:{"topics":[...],"keywords":[...],"exclude_topics":[...],"exclude_keywords":[...],"vibes":"...","embedding_threshold":0.5,"judge_enabled":true,"judge_strictness":"moderate"}
 - MECHANICAL_FILTERS_JSON:{"post_type":"all","lang_allow":[],"require_media":false,"exclude_media":false,"require_video":false,"exclude_video":false,"require_link":false,"exclude_links":false,"require_quote":false,"hashtag_include":[],"min_like_count":0,"min_repost_count":0,"min_reply_count":0,"time_window":"24h","created_after_iso":"","created_before_iso":""}
+- RERANK_PROMPT_TEXT:<<<
+A single editorial paragraph — 3-6 sentences — telling a Claude reranker what counts as a great match for THIS feed. Describe the ideal reader's intent, the angle they care about, what to surface vs skip, and the tone that fits. No bullet points. Speak to the reranker in second person ("Prefer X over Y", "Skip posts that…"). Re-emit each turn; refine as you learn more.
+>>>
 
-Both JSON blocks must reflect your CURRENT BEST UNDERSTANDING — cumulative, not a delta. Always include EVERY field. Empty arrays / false / "all" are fine for fields the user hasn't touched. NEVER drop a value you previously inferred unless the user explicitly contradicts it.
+The three JSON blocks and the rerank prompt must reflect your CURRENT BEST UNDERSTANDING — cumulative, not a delta. Always include EVERY field in the JSON blocks. Empty arrays / false / "all" are fine for fields the user hasn't touched. NEVER drop a value you previously inferred unless the user explicitly contradicts it.
 
-When the user confirms, output FEED_DONE on its own line plus a single closing sentence. Still emit FEED_NAME, FEED_CONFIG_JSON, and MECHANICAL_FILTERS_JSON on the same final reply.
+Only emit RERANK_PROMPT_TEXT once you have at least one topic or keyword to anchor it. Below that bar, omit the block entirely — better no prompt than a vague one.
+
+When the user confirms, output FEED_DONE on its own line plus a single closing sentence. Still emit FEED_NAME, FEED_CONFIG_JSON, MECHANICAL_FILTERS_JSON, and RERANK_PROMPT_TEXT (if you have enough signal) on the same final reply.
 
 Current saved preferences:
 `;
@@ -162,8 +167,8 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt =
       SYSTEM_PROMPT +
-      (feed.description
-        ? `\nDescription: "${feed.description}"\nSemantic config: ${JSON.stringify(feed.semantic_config)}`
+      (feed.retrieval_query
+        ? `\nRetrieval query: "${feed.retrieval_query}"\nSemantic config: ${JSON.stringify(feed.semantic_config)}`
         : "\nNo preferences set yet — this is a fresh start.");
 
     // For init, use a nudge (not saved to history)
@@ -235,7 +240,7 @@ export async function POST(req: NextRequest) {
           judge_strictness:
             pickScalar(incoming.judge_strictness, existing.judge_strictness) ?? "moderate",
         };
-        updates.description = [
+        updates.retrieval_query = [
           ...merged.topics,
           ...merged.keywords,
           merged.vibes,
@@ -310,6 +315,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Editorial rerank prompt — a free-form paragraph between paired markers,
+    // captured verbatim. Persisted to feeds.rerank_prompt; the curator
+    // unlocks the reranker toggle once this is non-null.
+    const rerankMatch = assistantText.match(/RERANK_PROMPT_TEXT:<<<\s*([\s\S]*?)\s*>>>/);
+    if (rerankMatch) {
+      const text = rerankMatch[1].trim();
+      if (text.length > 0) {
+        updates.rerank_prompt = text;
+      }
+    }
+
     if (Object.keys(updates).length > 0) {
       await updateFeed(feedId, updates);
     }
@@ -322,6 +338,7 @@ export async function POST(req: NextRequest) {
       .replace(/FEED_NAME:.+\n?/g, "")
       .replace(/FEED_CONFIG_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
       .replace(/MECHANICAL_FILTERS_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+      .replace(/RERANK_PROMPT_TEXT:<<<[\s\S]*?>>>\s*\n?/g, "")
       .replace(/FEED_DONE\n?/g, "")
       .trim();
 

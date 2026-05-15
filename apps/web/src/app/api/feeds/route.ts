@@ -39,11 +39,11 @@ export async function PATCH(req: NextRequest) {
   if (isAuthError(auth)) return auth;
 
   const body = await req.json();
-  const { id, name, description, mechanical_filters, semantic_config } =
+  const { id, name, retrieval_query, mechanical_filters, semantic_config } =
     body as {
       id?: number;
       name?: string;
-      description?: string;
+      retrieval_query?: string;
       mechanical_filters?: MechanicalFilters;
       semantic_config?: SemanticConfig;
     };
@@ -58,7 +58,7 @@ export async function PATCH(req: NextRequest) {
 
   const updated = await updateFeed(id, {
     name,
-    description,
+    retrieval_query,
     mechanical_filters,
     semantic_config,
   });

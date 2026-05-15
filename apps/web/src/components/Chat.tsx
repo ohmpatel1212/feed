@@ -19,7 +19,7 @@ interface FeedCriteria {
 interface Feed {
   id: number;
   name: string;
-  description: string;
+  retrieval_query: string;
   criteria: FeedCriteria;
   created_at: string;
   updated_at: string;

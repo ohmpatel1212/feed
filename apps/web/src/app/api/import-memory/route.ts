@@ -66,7 +66,7 @@ Rules:
   try {
     const semanticConfig = JSON.parse(configMatch[1]) as SemanticConfig;
     const name = nameMatch ? nameMatch[1].trim() : "From AI Memory";
-    const description = [
+    const retrieval_query = [
       ...(semanticConfig.topics || []),
       ...(semanticConfig.keywords || []),
       semanticConfig.vibes,
@@ -75,10 +75,10 @@ Rules:
       .join(", ");
 
     const feed = await createFeed(auth.userId, name);
-    await updateFeed(feed.id, { name, description, semantic_config: semanticConfig });
+    await updateFeed(feed.id, { name, retrieval_query, semantic_config: semanticConfig });
 
     return NextResponse.json({
-      feed: { ...feed, name, description, semantic_config: semanticConfig },
+      feed: { ...feed, name, retrieval_query, semantic_config: semanticConfig },
     });
   } catch {
     return NextResponse.json(
