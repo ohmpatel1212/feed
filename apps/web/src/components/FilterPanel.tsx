@@ -16,6 +16,7 @@ interface FilterPanelProps {
   postCount: number;
   rightPane?: "chat" | "tune";
   onRightPaneChange?: (pane: "chat" | "tune") => void;
+  rerankPrompt?: string | null;
   style?: React.CSSProperties;
 }
 
@@ -27,6 +28,7 @@ export default function FilterPanel({
   postCount,
   rightPane,
   onRightPaneChange,
+  rerankPrompt,
   style,
 }: FilterPanelProps) {
   const [mech, setMech] = useState<MechanicalFilters>({
@@ -215,6 +217,24 @@ export default function FilterPanel({
                 rows={3}
                 onChange={(e) => updateSem({ vibes: e.target.value })}
               />
+            </div>
+
+            {/* Reranker prompt — read-only view of what the chat agent
+                drafted. Used by /api/feed-preview?rerank=1 as the system
+                prompt for the Claude reranker pass over the vector top-200. */}
+            <div className="ctrl-section">
+              <label className="ctrl-label">
+                Reranker prompt
+                {rerankPrompt ? null : <span className="ctrl-label-hint"> · not drafted yet</span>}
+              </label>
+              {rerankPrompt ? (
+                <p className="ctrl-rerank-prompt">{rerankPrompt}</p>
+              ) : (
+                <p className="ctrl-rerank-prompt empty">
+                  The chat agent writes this once it has at least one topic
+                  or keyword to anchor it. Keep chatting and it&apos;ll fill in.
+                </p>
+              )}
             </div>
           </div>
         )}

@@ -185,6 +185,9 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [vectorOrder, setVectorOrder] = useState<string[]>([]);
   const [rerankedOrder, setRerankedOrder] = useState<string[] | null>(null);
   const [rerankAvailable, setRerankAvailable] = useState(false);
+  // The actual editorial paragraph the chat agent drafted, so the user
+  // can read it from the curator instead of querying the DB directly.
+  const [rerankPromptText, setRerankPromptText] = useState<string | null>(null);
   const [useRerank, setUseRerankState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(RERANK_KEY(feedId)) === "1";
@@ -249,6 +252,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         setPrevCriteriaJson(JSON.stringify(data.feed.criteria));
       }
       setRerankAvailable(!!data.feed?.rerank_prompt);
+      setRerankPromptText(data.feed?.rerank_prompt ?? null);
       setMessages(msgs);
     } catch { /* ignore */ }
     finally {
@@ -503,6 +507,14 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         const p = { retrieval_query: d.feed.retrieval_query, criteria: d.feed.criteria };
         setPrefs(p);
         checkNewFeed(p);
+      }
+      // Reranker availability flips on as soon as the chat agent drafts
+      // a rerank_prompt — usually on the very first turn. Without this
+      // line the toggle would stay disabled until the user navigates
+      // away and back, because rerankAvailable is only set on mount.
+      if (d.feed) {
+        setRerankAvailable(!!d.feed.rerank_prompt);
+        setRerankPromptText(d.feed.rerank_prompt ?? null);
       }
       let configChanged = false;
       if (d.feed?.semantic_config) {
@@ -1211,6 +1223,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           postCount={postCount}
           rightPane={rightPane}
           onRightPaneChange={setRightPane}
+          rerankPrompt={rerankPromptText}
           style={{ ["--cur-right-w" as string]: `${rightWidth}px` }}
         />
       </div>

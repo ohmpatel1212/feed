@@ -1474,6 +1474,31 @@
 .ctrl-textarea::placeholder{ color: var(--ink-4); }
 .ctrl-textarea:focus{ border-color: var(--aurora-deep); }
 
+.ctrl-label-hint{
+  color: var(--ink-4);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 400;
+}
+
+.ctrl-rerank-prompt{
+  margin: 0;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid var(--hair-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  font-family: var(--rf-body);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.ctrl-rerank-prompt.empty{
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-4);
+}
+
 .ctrl-safety{
   background: rgba(192, 86, 86, 0.05);
   border: 1px solid rgba(192, 86, 86, 0.2);
