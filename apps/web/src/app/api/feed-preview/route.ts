@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
   }
   const tFeed = performance.now();
 
-  const posts = await getFeedPreviewPosts(feedId, 50);
+  const posts = await getFeedPreviewPosts(feedId, 25);
   const tPosts = performance.now();
 
   console.log(
@@ -33,7 +33,9 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     total_stored: posts.length,
     mechanical_filters: feed.mechanical_filters,
-    semantic_config: feed.semantic_config,
+    subqueries: feed.subqueries,
+    candidate_budget: feed.candidate_budget,
+    rerank_prompt: feed.rerank_prompt,
     posts,
   });
 }

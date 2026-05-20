@@ -17,7 +17,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { ensureEnvFromSecret } from "./secrets";
 import type { VectorHit } from "./vector-search";
 
-export const RERANK_MODEL = "claude-sonnet-4-6";
+// Haiku 4.5 for bulk listwise rerank — Sonnet is ~5x slower for this shape
+// of task and the quality gap is small when the candidate text is short.
+export const RERANK_MODEL = "claude-haiku-4-5-20251001";
 
 const RERANK_OUTPUT_CONTRACT = `
 

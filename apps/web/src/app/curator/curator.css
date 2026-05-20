@@ -1388,6 +1388,92 @@
 }
 .ctrl-tag button:hover{ opacity: 1; }
 
+/* Read-only rerank prompt display — agent-generated, per feed */
+.ctrl-rerank-prompt{
+  background: rgba(232,185,136,0.10);
+  border: 1px solid rgba(232,185,136,0.4);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--rf-body);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+/* Subquery editor */
+.ctrl-subquery-list{
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ctrl-subquery-row{
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.ctrl-subquery-text{
+  flex: 1;
+  text-align: left;
+  background: rgba(125,203,165,0.10);
+  border: 1px solid rgba(62,138,108,0.22);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--rf-body);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink);
+  cursor: text;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ctrl-subquery-text:hover{
+  border-color: var(--aurora-deep);
+  background: rgba(125,203,165,0.16);
+}
+.ctrl-subquery-input{
+  flex: 1;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid var(--hair-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  font-family: var(--rf-body);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ctrl-subquery-input::placeholder{ color: var(--ink-4); }
+.ctrl-subquery-input:focus{ border-color: var(--aurora-deep); }
+.ctrl-subquery-remove,
+.ctrl-subquery-add{
+  flex-shrink: 0;
+  width: 28px;
+  background: transparent;
+  border: 1px solid var(--hair-strong);
+  border-radius: 6px;
+  color: var(--ink-4);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.ctrl-subquery-remove:hover{
+  border-color: rgba(216,133,117,0.6);
+  color: #a44a3b;
+  background: rgba(216,133,117,0.08);
+}
+.ctrl-subquery-add:hover:not(:disabled){
+  border-color: var(--aurora-deep);
+  color: var(--aurora-deep);
+  background: rgba(125,203,165,0.10);
+}
+.ctrl-subquery-add:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Slider */
 .ctrl-slider{
   -webkit-appearance: none;

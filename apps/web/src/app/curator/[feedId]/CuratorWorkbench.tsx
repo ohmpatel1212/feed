@@ -2,21 +2,15 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import Script from "next/script";
-import VoiceCards, { type Voice } from "@/components/VoiceCards";
 import FilterPanel from "@/components/FilterPanel";
 import ShaderSendButton from "@/components/ShaderSendButton";
 import { authedFetch } from "@/lib/authed-fetch";
-import type { MechanicalFilters, SemanticConfig } from "@/lib/types";
+import type { MechanicalFilters } from "@/lib/types";
+import { DEFAULT_CANDIDATE_BUDGET } from "@/lib/defaults";
 import { useResizable } from "../useResizable";
 import { useCurator, feedIsComplete } from "../curatorContext";
 
 interface Message { role: "user" | "assistant"; content: string; }
-interface FeedCriteria {
-  topics: string[]; keywords: string[];
-  exclude_topics: string[]; exclude_keywords: string[];
-  vibes: string;
-}
-interface Preferences { description: string; criteria: FeedCriteria; }
 interface Post {
   uri: string;
   author_did: string;
@@ -111,7 +105,8 @@ const RIGHT_MAX = 720;
 function parseMessage(content: string) {
   const stripped = content
     .replace(/FEED_NAME:.+\n?/g, "")
-    .replace(/FEED_CONFIG_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
+    .replace(/SUBQUERIES_JSON:\s*\[[\s\S]*?\]\s*\n?/g, "")
+    .replace(/RERANK_PROMPT_JSON:\s*"(?:\\.|[^"\\])*"\s*\n?/g, "")
     .replace(/MECHANICAL_FILTERS_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
     .replace(/FEED_DONE\n?/g, "")
     .trim();
@@ -167,21 +162,20 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [postCount, setPostCount] = useState(0);
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsStage, setPostsStage] = useState<"idle" | "searching" | "ranking">("idle");
   const [chatLoading, setChatLoading] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
-  const [prevCriteriaJson, setPrevCriteriaJson] = useState("");
-  const [showVoices, setShowVoices] = useState(false);
-  const [addedVoices, setAddedVoices] = useState<Voice[]>([]);
   const [mechanicalFilters, setMechanicalFilters] = useState<MechanicalFilters | null>(null);
-  const [semanticConfig, setSemanticConfig] = useState<SemanticConfig | null>(null);
+  const [subqueries, setSubqueries] = useState<string[]>([]);
+  const [candidateBudget, setCandidateBudget] = useState<number>(DEFAULT_CANDIDATE_BUDGET);
+  const [rerankPrompt, setRerankPrompt] = useState<string>("");
   const endRef = useRef<HTMLDivElement>(null);
-  const lastSemanticConfigJsonRef = useRef<string>("");
+  const lastSubqueriesJsonRef = useRef<string>("");
   const lastMechanicalFiltersJsonRef = useRef<string>("");
+  const lastBudgetRef = useRef<number>(DEFAULT_CANDIDATE_BUDGET);
   const postsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // On unmount (i.e. when the user switches feeds), clear the layout's
@@ -194,6 +188,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   async function saveMechanicalFilters(filters: MechanicalFilters) {
     setMechanicalFilters(filters);
+    lastMechanicalFiltersJsonRef.current = JSON.stringify(filters);
     try {
       await authedFetch("/api/feeds", {
         method: "PATCH",
@@ -202,15 +197,28 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     } catch { /* ignore */ }
   }
 
-  async function saveSemanticConfig(config: SemanticConfig) {
-    setSemanticConfig(config);
+  async function saveSubqueries(subs: string[]) {
+    setSubqueries(subs);
+    lastSubqueriesJsonRef.current = JSON.stringify(subs);
     try {
       await authedFetch("/api/feeds", {
         method: "PATCH",
-        body: JSON.stringify({ id: feedId, semantic_config: config }),
+        body: JSON.stringify({ id: feedId, subqueries: subs }),
       });
     } catch { /* ignore */ }
   }
+
+  async function saveCandidateBudget(n: number) {
+    setCandidateBudget(n);
+    lastBudgetRef.current = n;
+    try {
+      await authedFetch("/api/feeds", {
+        method: "PATCH",
+        body: JSON.stringify({ id: feedId, candidate_budget: n }),
+      });
+    } catch { /* ignore */ }
+  }
+
 
   const loadChat = useCallback(async (id: number) => {
     setChatLoading(true);
@@ -218,10 +226,15 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       const res = await authedFetch(`/api/chat?feedId=${id}`);
       const data = await res.json();
       const msgs: Message[] = data.messages || [];
-      if (data.feed?.criteria) {
-        setPrefs({ description: data.feed.description, criteria: data.feed.criteria });
-        setPrevCriteriaJson(JSON.stringify(data.feed.criteria));
+      if (Array.isArray(data.feed?.subqueries)) {
+        setSubqueries(data.feed.subqueries);
+        lastSubqueriesJsonRef.current = JSON.stringify(data.feed.subqueries);
       }
+      if (typeof data.feed?.candidate_budget === "number") {
+        setCandidateBudget(data.feed.candidate_budget);
+        lastBudgetRef.current = data.feed.candidate_budget;
+      }
+      setRerankPrompt(data.feed?.rerank_prompt ?? "");
       setMessages(msgs);
     } catch { /* ignore */ }
     finally {
@@ -240,7 +253,9 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       setPostCount(nextCount);
       setActivePostCount(nextCount);
       if (d.mechanical_filters) setMechanicalFilters(d.mechanical_filters);
-      if (d.semantic_config) setSemanticConfig(d.semantic_config);
+      if (Array.isArray(d.subqueries)) setSubqueries(d.subqueries);
+      if (typeof d.candidate_budget === "number") setCandidateBudget(d.candidate_budget);
+      if (typeof d.rerank_prompt === "string") setRerankPrompt(d.rerank_prompt);
     } catch { /* ignore */ }
     finally {
       setPostsLoading(false);
@@ -254,18 +269,11 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     loadPosts(feedId);
   }, [feedId, loadChat, loadPosts]);
 
-  // Watch for new criteria from the chat agent → refresh sidebar + show voices.
-  const checkNewFeed = useCallback((newPrefs: Preferences) => {
-    const newJson = JSON.stringify(newPrefs.criteria);
-    const hasCriteria = (newPrefs.criteria.topics?.length ?? 0) > 0 ||
-      (newPrefs.criteria.keywords?.length ?? 0) > 0;
-
-    if (hasCriteria && newJson !== prevCriteriaJson) {
-      setPrevCriteriaJson(newJson);
-      setShowVoices(true);
-      reloadFeeds();
-    }
-  }, [prevCriteriaJson, reloadFeeds]);
+  // When the chat agent updates subqueries, refresh the sidebar so the list
+  // and per-feed dot indicators stay in sync. Triggered from send() below.
+  const onSubqueriesChanged = useCallback(() => {
+    reloadFeeds();
+  }, [reloadFeeds]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -355,18 +363,14 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       const d = await res.json();
       const msgs = d.messages || [];
       setMessages(msgs);
-      if (d.feed?.criteria) {
-        const p = { description: d.feed.description, criteria: d.feed.criteria };
-        setPrefs(p);
-        checkNewFeed(p);
-      }
       let configChanged = false;
-      if (d.feed?.semantic_config) {
-        const incomingJson = JSON.stringify(d.feed.semantic_config);
-        if (incomingJson !== lastSemanticConfigJsonRef.current) {
-          lastSemanticConfigJsonRef.current = incomingJson;
-          setSemanticConfig(d.feed.semantic_config);
+      if (Array.isArray(d.feed?.subqueries)) {
+        const incomingJson = JSON.stringify(d.feed.subqueries);
+        if (incomingJson !== lastSubqueriesJsonRef.current) {
+          lastSubqueriesJsonRef.current = incomingJson;
+          setSubqueries(d.feed.subqueries);
           configChanged = true;
+          onSubqueriesChanged();
         }
       }
       if (d.feed?.mechanical_filters) {
@@ -376,6 +380,16 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           setMechanicalFilters(d.feed.mechanical_filters);
           configChanged = true;
         }
+      }
+      if (typeof d.feed?.candidate_budget === "number" &&
+          d.feed.candidate_budget !== lastBudgetRef.current) {
+        lastBudgetRef.current = d.feed.candidate_budget;
+        setCandidateBudget(d.feed.candidate_budget);
+      }
+      if (typeof d.feed?.rerank_prompt === "string" &&
+          d.feed.rerank_prompt !== rerankPrompt) {
+        setRerankPrompt(d.feed.rerank_prompt);
+        configChanged = true;
       }
       if (configChanged) {
         if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
@@ -438,11 +452,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     send(composed);
   }
 
-  const hasCriteria =
-    (prefs?.criteria &&
-      ((prefs.criteria.topics?.length ?? 0) > 0 || (prefs.criteria.keywords?.length ?? 0) > 0)) ||
-    (semanticConfig &&
-      ((semanticConfig.topics?.length ?? 0) > 0 || (semanticConfig.keywords?.length ?? 0) > 0));
+  const hasCriteria = subqueries.length > 0;
 
   const activeFeed = feeds.find(f => f.id === String(feedId));
   const lastMsg = messages[messages.length - 1];
@@ -543,7 +553,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                     <p className="sub">
                       {!hasCriteria
                         ? "Posts will appear here as we figure out what you're into."
-                        : "Try Refresh, or refine the feed criteria in the chat."}
+                        : "Try Refresh, or refine the subqueries in chat or the Tune panel."}
                     </p>
                   </>
                 )}
@@ -585,8 +595,8 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                     )}
                     <div className="cur-post-embed-meta">
                       <span
-                        className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
-                        title="Match score"
+                        className={`cur-post-score ${post.score >= 0.8 ? "high" : post.score >= 0.7 ? "mid" : "low"}`}
+                        title="Match score (rescaled cosine similarity)"
                       >
                         {(post.score * 100).toFixed(0)}%
                       </span>
@@ -710,8 +720,8 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                         </span>
                       </div>
                       <span
-                        className={`cur-post-score ${post.score >= 0.6 ? "high" : post.score >= 0.4 ? "mid" : "low"}`}
-                        title="Match score"
+                        className={`cur-post-score ${post.score >= 0.8 ? "high" : post.score >= 0.7 ? "mid" : "low"}`}
+                        title="Match score (rescaled cosine similarity)"
                       >
                         {(post.score * 100).toFixed(0)}%
                       </span>
@@ -871,31 +881,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                 <div className="cur-dots"><span /><span /><span /></div>
               )}
 
-              {showVoices && (
-                <VoiceCards
-                  onAddVoices={(voices) => {
-                    setAddedVoices(voices);
-                    setShowVoices(false);
-                    const names = voices.map(v => v.name).join(", ");
-                    send(`Add these voices to my feed: ${names}`);
-                  }}
-                  onDismiss={() => {
-                    setShowVoices(false);
-                    setMobileTab("feed");
-                  }}
-                />
-              )}
-
-              {addedVoices.length > 0 && !showVoices && (
-                <div className="cur-msg">
-                  <div className="cur-msg-assistant">
-                    <p style={{ fontSize: 13, color: "var(--aurora)" }}>
-                      Added {addedVoices.length} voice{addedVoices.length !== 1 ? "s" : ""} to your feed: {addedVoices.map(v => v.name).join(", ")}
-                    </p>
-                  </div>
-                </div>
-              )}
-
               <div ref={endRef} />
             </div>
           </div>
@@ -1021,9 +1006,12 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         {/* TUNE PANEL (right, when rightPane === "tune") */}
         <FilterPanel
           mechanicalFilters={mechanicalFilters || ({} as MechanicalFilters)}
-          semanticConfig={semanticConfig || ({} as SemanticConfig)}
+          subqueries={subqueries}
+          candidateBudget={candidateBudget}
+          rerankPrompt={rerankPrompt}
           onMechanicalChange={saveMechanicalFilters}
-          onSemanticChange={saveSemanticConfig}
+          onSubqueriesChange={saveSubqueries}
+          onCandidateBudgetChange={saveCandidateBudget}
           postCount={postCount}
           rightPane={rightPane}
           onRightPaneChange={setRightPane}

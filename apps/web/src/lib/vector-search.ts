@@ -1,11 +1,14 @@
 /**
  * Vector Search → Postgres hydration.
  *
- * 1. Embed the query with Gemini (`gemini-embedding-001`, 768d, RETRIEVAL_QUERY).
- * 2. findNeighbors against Vertex AI Vector Search — returns vector scores +
- *    restricts (including `uri`).
- * 3. Hydrate the full post from Postgres (`bsky.posts` LEFT JOIN `bsky.authors`
- *    LEFT JOIN `bsky.post_engagement`) in a single batched query.
+ * Multi-query design (curator redesign):
+ * 1. For each subquery, embed with Gemini (`gemini-embedding-001`, 768d,
+ *    RETRIEVAL_QUERY) and call Vertex `findNeighbors` with k = floor(N / M).
+ * 2. Union the result URIs across subqueries, deduping on URI and keeping
+ *    the max raw similarity score.
+ * 3. Rescale raw cosine similarity from [-1, 1] to [0, 1] via (x + 1) / 2.
+ * 4. Hydrate the union from Postgres (bsky.posts ⨝ authors ⨝ post_engagement).
+ * 5. AppView label gate (NSFW deny-list).
  *
  * Post text + display fields live in `bsky.posts`; the vector index carries
  * only filter restricts. The runtime needs ADC with `roles/aiplatform.user`
@@ -65,6 +68,9 @@ export interface VectorHit {
   did: string;
   text: string;
   created_at: string;
+  // Rescaled cosine similarity in [0, 1]. The raw dot product from Vertex sits
+  // in [-1, 1] for L2-normalized Gemini vectors; we apply (x + 1) / 2 here so
+  // downstream callers don't have to know about the dot-product convention.
   vector_score: number;
 
   langs: string[];
@@ -114,11 +120,8 @@ export interface SearchFilter {
 }
 
 // In-memory LRU cache for query embeddings. The embedding is a pure function
-// of the query text, which itself is a deterministic projection of the feed's
-// semantic_config — so it only changes when the user edits the feed. Keyed by
-// raw query text; evicts FIFO when over capacity. Process-local; does not
-// survive restarts or scale-out (acceptable for the demo; persist on the feed
-// row when we need cross-instance durability).
+// of the subquery text, so identical subqueries hit cache across refreshes.
+// Process-local; does not survive restarts or scale-out.
 const EMBED_CACHE_MAX = 256;
 const embedCache = new Map<string, number[]>();
 
@@ -259,7 +262,8 @@ async function hydrateFromPostgres(
   for (const row of res.rows) byUri.set(row.uri, row);
 
   const hits: VectorHit[] = [];
-  // Preserve Vertex ordering — iterate uris, not res.rows.
+  // Preserve the input ordering (which carries the union-merge order from
+  // multi-query); the reranker (when enabled) will re-order anyway.
   for (const uri of uris) {
     const r = byUri.get(uri);
     if (!r) continue;
@@ -304,13 +308,10 @@ async function hydrateFromPostgres(
  * AppView, asking it to merge in labels from the official moderation labeler.
  *
  * The AppView caps `app.bsky.feed.getPosts` at 25 URIs per call, so we batch
- * and fan out in parallel. Returns a `uri → label-values[]` map containing
- * both self-labels (always present) and labels emitted by the labelers
- * named in the `atproto-accept-labelers` header.
+ * and fan out in parallel. Returns a `uri → label-values[]` map.
  *
  * Fail-soft: any HTTP error returns an empty map for that batch — the caller
- * treats "no labels known" as "don't filter," so a flaky AppView never blocks
- * the user from seeing their feed.
+ * treats "no labels known" as "don't filter."
  */
 async function fetchPostLabels(
   uris: string[],
@@ -359,26 +360,23 @@ async function fetchPostLabels(
   return out;
 }
 
-export async function searchPosts(opts: {
-  query: string;
-  k?: number;
-  filter?: SearchFilter;
-}): Promise<VectorHit[]> {
-  const k = opts.k ?? 25;
-  const t0 = performance.now();
-  const embedCached = embedCache.has(opts.query);
-  const queryVec = await embedQuery(opts.query);
-  const tEmbed = performance.now();
-
+/**
+ * Embed one subquery and call Vertex findNeighbors. Returns the neighbor list
+ * with raw similarity scores (dot product in [-1, 1] for L2-normalized vectors).
+ */
+async function embedAndFindNeighbors(
+  query: string,
+  k: number,
+  filter?: SearchFilter
+): Promise<Array<{ uri: string; rawScore: number }>> {
+  const queryVec = await embedQuery(query);
   const indexEndpoint = `projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/indexEndpoints/${VERTEX_INDEX_ENDPOINT_ID}`;
-  const restricts = buildQueryRestricts(opts.filter);
-  const numericRestricts = buildNumericQueryRestricts(opts.filter);
+  const restricts = buildQueryRestricts(filter);
+  const numericRestricts = buildNumericQueryRestricts(filter);
 
   const findRes = await matchClient().findNeighbors({
     indexEndpoint,
     deployedIndexId: VERTEX_DEPLOYED_INDEX_ID,
-    // True so the response carries the `uri` restrict — we need it to JOIN to
-    // bsky.posts. With `false`, neighbors come back as opaque datapoint IDs.
     returnFullDatapoint: true,
     queries: [
       {
@@ -391,23 +389,71 @@ export async function searchPosts(opts: {
       },
     ],
   });
-  const tFind = performance.now();
   const resp = Array.isArray(findRes) ? findRes[0] : findRes;
-
   const neighbors = resp.nearestNeighbors?.[0]?.neighbors ?? [];
-  const uris: string[] = [];
-  const scoreByUri = new Map<string, number>();
+
+  const out: Array<{ uri: string; rawScore: number }> = [];
   for (const n of neighbors) {
-    // We didn't ask for full datapoint, but Vertex returns id + restricts on
-    // findNeighbors anyway. Look for the uri restrict; fall back to id if absent.
     const dp = n.datapoint;
     const restrictsList = (dp?.restricts ?? []) as RawRestrict[];
     const uri = restrictsList.find((r) => r.namespace === "uri")?.allowList?.[0];
     if (!uri) continue;
-    const score = typeof n.distance === "number" ? n.distance : 0;
-    uris.push(uri);
-    scoreByUri.set(uri, score);
+    const rawScore = typeof n.distance === "number" ? n.distance : 0;
+    out.push({ uri, rawScore });
   }
+  return out;
+}
+
+// Cosine similarity (returned by Vertex for L2-normalized Gemini vectors on a
+// DOT_PRODUCT_DISTANCE index) lives in [-1, 1]. Rescale to [0, 1] so the UI
+// can read "higher = better" without doing the math itself.
+function rescaleSimilarity(raw: number): number {
+  const x = (raw + 1) / 2;
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+export interface SearchOpts {
+  subqueries: string[];
+  totalBudget: number;
+  filter?: SearchFilter;
+}
+
+/**
+ * Multi-subquery vector search.
+ *
+ * For each subquery, runs a parallel embed + Vertex ANN call with
+ * `k = floor(totalBudget / subqueries.length)`. Unions the results by URI
+ * (keeping max raw similarity), hydrates the union from Postgres, applies
+ * the NSFW label gate. The reranker is not invoked here.
+ */
+export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
+  const subqueries = opts.subqueries.map((s) => s.trim()).filter(Boolean);
+  if (subqueries.length === 0) return [];
+  const totalBudget = Math.max(1, opts.totalBudget);
+  const perQueryK = Math.max(1, Math.floor(totalBudget / subqueries.length));
+  const t0 = performance.now();
+
+  // Parallel embed + findNeighbors per subquery.
+  const perQueryResults = await Promise.all(
+    subqueries.map((q) => embedAndFindNeighbors(q, perQueryK, opts.filter))
+  );
+  const tFind = performance.now();
+
+  // Union + dedup by URI, keeping the max raw similarity across subqueries.
+  // Insertion order on the Map preserves the first occurrence's position,
+  // which gives a stable downstream ordering even before any reranker runs.
+  const rawByUri = new Map<string, number>();
+  for (const list of perQueryResults) {
+    for (const { uri, rawScore } of list) {
+      const prev = rawByUri.get(uri);
+      if (prev === undefined || rawScore > prev) rawByUri.set(uri, rawScore);
+    }
+  }
+  const uris = Array.from(rawByUri.keys());
+  const scoreByUri = new Map<string, number>();
+  for (const [uri, raw] of rawByUri) scoreByUri.set(uri, rescaleSimilarity(raw));
 
   // Hydrate from Postgres AND fetch labeler-applied labels in parallel — both
   // take the same URI list. Skip the AppView call entirely if there's nothing
@@ -435,11 +481,11 @@ export async function searchPosts(opts: {
   }
 
   console.log(
-    `[timing] searchPosts embed=${(tEmbed - t0).toFixed(0)}ms${embedCached ? "(cached)" : ""} ` +
-      `findNeighbors=${(tFind - tEmbed).toFixed(0)}ms ` +
+    `[timing] searchPosts subqueries=${subqueries.length} perK=${perQueryK} ` +
+      `find=${(tFind - t0).toFixed(0)}ms ` +
       `hydrate+labels=${(tParallel - tFind).toFixed(0)}ms ` +
       `total=${(tParallel - t0).toFixed(0)}ms ` +
-      `neighbors=${neighbors.length} hits=${hits.length}` +
+      `union=${uris.length} hits=${hits.length}` +
       (postLabels ? ` labeler-filtered=${removed}` : "")
   );
   return filteredHits;

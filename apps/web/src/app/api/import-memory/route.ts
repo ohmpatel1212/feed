@@ -3,7 +3,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { requireAuth, isAuthError } from "@/lib/auth";
 import { createFeed, updateFeed } from "@/lib/pg";
 import { ensureEnvFromSecret } from "@/lib/secrets";
-import type { SemanticConfig } from "@/lib/types";
 
 let _client: Anthropic | null = null;
 async function client(): Promise<Anthropic> {
@@ -33,15 +32,20 @@ export async function POST(req: NextRequest) {
 
 From the memory text, output EXACTLY two lines:
 FEED_NAME:<2-4 word name capturing their main interests>
-FEED_CONFIG_JSON:{"topics":[...],"keywords":[...],"exclude_topics":[],"exclude_keywords":[],"vibes":"...","embedding_threshold":0.5,"judge_enabled":true,"judge_strictness":"moderate"}
+SUBQUERIES_JSON:["...", "...", ...]
 
-Rules:
-- topics: broad categories (3-6 items) based on what they care about
-- keywords: specific terms, tools, names they'd want to see posts about (5-15 items)
-- vibes: a sentence describing the tone/type of content they'd enjoy
-- Be generous — extract everything that suggests an interest, even minor ones
-- If the memory mentions their job/field, include related professional topics
-- If there's not much to work with, do your best with what's there`,
+Rules for SUBQUERIES_JSON:
+- 1 to 4 entries, never more. Most users need 2-3.
+- Each entry is a short topical query (5-15 words) describing the kind of content the user would enjoy.
+- Each entry is a SINGLE distinct intent. Don't repeat the same idea in different words.
+- Shape: a topical query, slightly richer than a keyword list. Specific, not generic.
+  - GOOD: "personal essays on AI's effect on creative work"
+  - GOOD: "long-form posts about transformer interpretability research"
+  - GOOD: "indie game developer postmortems and design discussions"
+  - BAD: "AI" (too sparse)
+  - BAD: "I want thoughtful AI takes" (embeds the frame, not the content)
+- If the memory mentions a job or field, include a subquery for that domain.
+- Be generous — extract everything that suggests an interest, but merge overlapping ones into a single subquery.`,
     messages: [
       {
         role: "user",
@@ -54,9 +58,9 @@ Rules:
     response.content[0].type === "text" ? response.content[0].text : "";
 
   const nameMatch = text.match(/FEED_NAME:(.+)/);
-  const configMatch = text.match(/FEED_CONFIG_JSON:(\{.*\})/);
+  const subMatch = text.match(/SUBQUERIES_JSON:\s*(\[[\s\S]*?\])/);
 
-  if (!configMatch) {
+  if (!subMatch) {
     return NextResponse.json(
       { error: "Could not extract preferences from memory" },
       { status: 422 }
@@ -64,22 +68,21 @@ Rules:
   }
 
   try {
-    const semanticConfig = JSON.parse(configMatch[1]) as SemanticConfig;
+    const parsed = JSON.parse(subMatch[1]) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("not an array");
+    const subqueries = parsed
+      .filter((s): s is string => typeof s === "string")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .slice(0, 4);
+    if (subqueries.length === 0) throw new Error("no usable subqueries");
+
     const name = nameMatch ? nameMatch[1].trim() : "From AI Memory";
-    const description = [
-      ...(semanticConfig.topics || []),
-      ...(semanticConfig.keywords || []),
-      semanticConfig.vibes,
-    ]
-      .filter(Boolean)
-      .join(", ");
 
     const feed = await createFeed(auth.userId, name);
-    await updateFeed(feed.id, { name, description, semantic_config: semanticConfig });
+    const updated = await updateFeed(feed.id, { name, subqueries });
 
-    return NextResponse.json({
-      feed: { ...feed, name, description, semantic_config: semanticConfig },
-    });
+    return NextResponse.json({ feed: updated ?? feed });
   } catch {
     return NextResponse.json(
       { error: "Failed to parse extracted config" },
