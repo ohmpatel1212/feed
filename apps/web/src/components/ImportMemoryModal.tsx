@@ -5,16 +5,7 @@ import { useState, useRef } from "react";
 interface Feed {
   id: number;
   name: string;
-  retrieval_query: string;
-  criteria: {
-    topics: string[];
-    keywords: string[];
-    exclude_topics: string[];
-    exclude_keywords: string[];
-    vibes: string;
-  };
-  created_at: string;
-  updated_at: string;
+  subqueries: string[];
 }
 
 interface ImportMemoryModalProps {
