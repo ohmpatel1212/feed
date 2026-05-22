@@ -62,6 +62,7 @@ export async function GET(req: NextRequest) {
           candidate_budget: feed.candidate_budget,
           rerank_prompt: feed.rerank_prompt,
           rerank_model: feed.rerank_model,
+          rerank_thinking_enabled: feed.rerank_thinking_enabled,
           posts,
           ms_total: Math.round(performance.now() - t0),
         });

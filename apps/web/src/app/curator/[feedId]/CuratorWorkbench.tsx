@@ -108,14 +108,10 @@ const RIGHT_MIN = 320;
 const RIGHT_MAX = 720;
 
 function parseMessage(content: string) {
-  const stripped = content
-    .replace(/FEED_NAME:.+\n?/g, "")
-    .replace(/SUBQUERIES_JSON:\s*\[[\s\S]*?\]\s*\n?/g, "")
-    .replace(/RERANK_PROMPT_JSON:\s*"(?:\\.|[^"\\])*"\s*\n?/g, "")
-    .replace(/MECHANICAL_FILTERS_JSON:\s*\{[\s\S]*?\}\s*\n?/g, "")
-    .replace(/FEED_DONE\n?/g, "")
-    .trim();
-  const lines = stripped.split("\n");
+  // Server stores the agent's question text + numbered option lines (rendered
+  // from a present_options tool call). Pull those numbered lines out so we
+  // can render them as chips.
+  const lines = content.split("\n");
   const options: { key: string; label: string }[] = [];
   const textLines: string[] = [];
   for (const line of lines) {
@@ -132,7 +128,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     reloadFeeds,
     setActivePostCount,
     mobileTab,
-    setMobileTab,
     setOptionsUnread,
   } = useCurator();
 
@@ -175,6 +170,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // Interview mode is a hint to the agent for the *next* request only; the
+  // agent picks up the pattern from history after that. Set true by the
+  // "Help me build my prompt" button, false by "Cancel questions".
+  const interviewModeRef = useRef(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [postCount, setPostCount] = useState(0);
   const [postsLoading, setPostsLoading] = useState(false);
@@ -183,6 +182,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [pipelineHits, setPipelineHits] = useState<number | undefined>(undefined);
   const [pipelineImages, setPipelineImages] = useState<number | undefined>(undefined);
   const [pipelineModel, setPipelineModel] = useState<string | undefined>(undefined);
+  const [pipelineThinkingEnabled, setPipelineThinkingEnabled] = useState<boolean | undefined>(undefined);
   const [chatLoading, setChatLoading] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const [mechanicalFilters, setMechanicalFilters] = useState<MechanicalFilters | null>(null);
@@ -190,11 +190,26 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [candidateBudget, setCandidateBudget] = useState<number>(DEFAULT_CANDIDATE_BUDGET);
   const [rerankPrompt, setRerankPrompt] = useState<string>("");
   const [rerankModel, setRerankModel] = useState<string>(DEFAULT_RERANK_MODEL);
+  const [rerankThinkingEnabled, setRerankThinkingEnabled] = useState<boolean>(false);
   const endRef = useRef<HTMLDivElement>(null);
-  const lastSubqueriesJsonRef = useRef<string>("");
-  const lastMechanicalFiltersJsonRef = useRef<string>("");
-  const lastBudgetRef = useRef<number>(DEFAULT_CANDIDATE_BUDGET);
+  // Single signature of the fields that, when changed, should re-fetch posts.
+  // Updated by both the user (Tune panel saves) and the agent (chat replies).
+  const feedSignatureRef = useRef<string>("");
   const postsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function feedSignature(f: {
+    subqueries?: string[];
+    mechanical_filters?: MechanicalFilters;
+    candidate_budget?: number;
+    rerank_prompt?: string;
+  }): string {
+    return JSON.stringify({
+      s: f.subqueries ?? [],
+      m: f.mechanical_filters ?? null,
+      b: f.candidate_budget ?? null,
+      r: f.rerank_prompt ?? "",
+    });
+  }
 
   // On unmount (i.e. when the user switches feeds), clear the layout's
   // mirrored post count so the sidebar doesn't briefly show stale numbers
@@ -204,48 +219,42 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     return () => setActivePostCount(0);
   }, [setActivePostCount]);
 
-  async function saveMechanicalFilters(filters: MechanicalFilters) {
-    setMechanicalFilters(filters);
-    lastMechanicalFiltersJsonRef.current = JSON.stringify(filters);
+  // Patches that originate from the Tune panel. We update local state and
+  // the signature in sync so the next chat reply doesn't trigger a redundant
+  // post-refresh just because the server echoed back our own write.
+  async function patchFeed(patch: {
+    mechanical_filters?: MechanicalFilters;
+    subqueries?: string[];
+    candidate_budget?: number;
+    rerank_model?: string;
+    rerank_thinking_enabled?: boolean;
+  }) {
+    if (patch.mechanical_filters) setMechanicalFilters(patch.mechanical_filters);
+    if (patch.subqueries) setSubqueries(patch.subqueries);
+    if (patch.candidate_budget !== undefined) setCandidateBudget(patch.candidate_budget);
+    if (patch.rerank_model) setRerankModel(patch.rerank_model);
+    if (patch.rerank_thinking_enabled !== undefined) setRerankThinkingEnabled(patch.rerank_thinking_enabled);
+    feedSignatureRef.current = feedSignature({
+      subqueries: patch.subqueries ?? subqueries,
+      mechanical_filters: patch.mechanical_filters ?? mechanicalFilters ?? undefined,
+      candidate_budget: patch.candidate_budget ?? candidateBudget,
+      rerank_prompt: rerankPrompt,
+    });
     try {
       await authedFetch("/api/feeds", {
         method: "PATCH",
-        body: JSON.stringify({ id: feedId, mechanical_filters: filters }),
+        body: JSON.stringify({ id: feedId, ...patch }),
       });
     } catch { /* ignore */ }
   }
 
-  async function saveSubqueries(subs: string[]) {
-    setSubqueries(subs);
-    lastSubqueriesJsonRef.current = JSON.stringify(subs);
-    try {
-      await authedFetch("/api/feeds", {
-        method: "PATCH",
-        body: JSON.stringify({ id: feedId, subqueries: subs }),
-      });
-    } catch { /* ignore */ }
-  }
-
-  async function saveCandidateBudget(n: number) {
-    setCandidateBudget(n);
-    lastBudgetRef.current = n;
-    try {
-      await authedFetch("/api/feeds", {
-        method: "PATCH",
-        body: JSON.stringify({ id: feedId, candidate_budget: n }),
-      });
-    } catch { /* ignore */ }
-  }
-
-  async function saveRerankModel(model: string) {
-    setRerankModel(model);
-    try {
-      await authedFetch("/api/feeds", {
-        method: "PATCH",
-        body: JSON.stringify({ id: feedId, rerank_model: model }),
-      });
-    } catch { /* ignore */ }
-  }
+  const saveMechanicalFilters = (filters: MechanicalFilters) =>
+    patchFeed({ mechanical_filters: filters });
+  const saveSubqueries = (subs: string[]) => patchFeed({ subqueries: subs });
+  const saveCandidateBudget = (n: number) => patchFeed({ candidate_budget: n });
+  const saveRerankModel = (model: string) => patchFeed({ rerank_model: model });
+  const saveRerankThinkingEnabled = (v: boolean) =>
+    patchFeed({ rerank_thinking_enabled: v });
 
 
   const loadChat = useCallback(async (id: number) => {
@@ -254,17 +263,19 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       const res = await authedFetch(`/api/chat?feedId=${id}`);
       const data = await res.json();
       const msgs: Message[] = data.messages || [];
-      if (Array.isArray(data.feed?.subqueries)) {
-        setSubqueries(data.feed.subqueries);
-        lastSubqueriesJsonRef.current = JSON.stringify(data.feed.subqueries);
-      }
-      if (typeof data.feed?.candidate_budget === "number") {
-        setCandidateBudget(data.feed.candidate_budget);
-        lastBudgetRef.current = data.feed.candidate_budget;
-      }
-      setRerankPrompt(data.feed?.rerank_prompt ?? "");
-      if (typeof data.feed?.rerank_model === "string" && data.feed.rerank_model.length > 0) {
-        setRerankModel(data.feed.rerank_model);
+      const f = data.feed;
+      if (f) {
+        if (Array.isArray(f.subqueries)) setSubqueries(f.subqueries);
+        if (typeof f.candidate_budget === "number") setCandidateBudget(f.candidate_budget);
+        if (f.mechanical_filters) setMechanicalFilters(f.mechanical_filters);
+        setRerankPrompt(f.rerank_prompt ?? "");
+        if (typeof f.rerank_model === "string" && f.rerank_model.length > 0) {
+          setRerankModel(f.rerank_model);
+        }
+        if (typeof f.rerank_thinking_enabled === "boolean") {
+          setRerankThinkingEnabled(f.rerank_thinking_enabled);
+        }
+        feedSignatureRef.current = feedSignature(f);
       }
       setMessages(msgs);
     } catch { /* ignore */ }
@@ -280,6 +291,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     setPipelineHits(undefined);
     setPipelineImages(undefined);
     setPipelineModel(undefined);
+    setPipelineThinkingEnabled(undefined);
     try {
       const res = await authedFetch(`/api/feed-preview/stream?feedId=${id}`);
       if (!res.ok || !res.body) {
@@ -309,6 +321,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               hits?: number;
               images?: number;
               model?: string;
+              thinking_enabled?: boolean;
               posts?: Post[];
               total_stored?: number;
               mechanical_filters?: MechanicalFilters;
@@ -316,6 +329,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               candidate_budget?: number;
               rerank_prompt?: string;
               rerank_model?: string;
+              rerank_thinking_enabled?: boolean;
               message?: string;
             };
             if (ev.event === "stage" && ev.stage) {
@@ -334,6 +348,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   if (typeof ev.hits === "number") setPipelineHits(ev.hits);
                   if (typeof ev.images === "number") setPipelineImages(ev.images);
                   if (typeof ev.model === "string") setPipelineModel(ev.model);
+                  if (typeof ev.thinking_enabled === "boolean") setPipelineThinkingEnabled(ev.thinking_enabled);
                 }
               }
             } else if (ev.event === "done") {
@@ -349,6 +364,15 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               if (typeof ev.rerank_model === "string" && ev.rerank_model.length > 0) {
                 setRerankModel(ev.rerank_model);
               }
+              if (typeof ev.rerank_thinking_enabled === "boolean") {
+                setRerankThinkingEnabled(ev.rerank_thinking_enabled);
+              }
+              feedSignatureRef.current = feedSignature({
+                subqueries: ev.subqueries,
+                mechanical_filters: ev.mechanical_filters,
+                candidate_budget: ev.candidate_budget,
+                rerank_prompt: ev.rerank_prompt,
+              });
             } else if (ev.event === "error") {
               console.warn("[feed-preview/stream] error:", ev.message);
             }
@@ -368,12 +392,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     loadChat(feedId);
     loadPosts(feedId);
   }, [feedId, loadChat, loadPosts]);
-
-  // When the chat agent updates subqueries, refresh the sidebar so the list
-  // and per-feed dot indicators stay in sync. Triggered from send() below.
-  const onSubqueriesChanged = useCallback(() => {
-    reloadFeeds();
-  }, [reloadFeeds]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
@@ -455,47 +473,36 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     setSelectedOptions(new Set());
     setMessages(prev => [...prev, { role: "user", content: text.trim() }]);
     setLoading(true);
+    const interview = interviewModeRef.current;
+    // Interview flag is consumed once: after a single nudged turn, the model
+    // picks up the question/options pattern from history on its own.
+    interviewModeRef.current = false;
     try {
       const res = await authedFetch("/api/chat", {
         method: "POST",
-        body: JSON.stringify({ message: text.trim(), feedId }),
+        body: JSON.stringify({ message: text.trim(), feedId, interview }),
       });
       const d = await res.json();
       const msgs = d.messages || [];
       setMessages(msgs);
-      let configChanged = false;
-      if (Array.isArray(d.feed?.subqueries)) {
-        const incomingJson = JSON.stringify(d.feed.subqueries);
-        if (incomingJson !== lastSubqueriesJsonRef.current) {
-          lastSubqueriesJsonRef.current = incomingJson;
-          setSubqueries(d.feed.subqueries);
-          configChanged = true;
-          onSubqueriesChanged();
+      const f = d.feed;
+      if (f) {
+        const prevSubs = subqueries;
+        if (Array.isArray(f.subqueries)) setSubqueries(f.subqueries);
+        if (f.mechanical_filters) setMechanicalFilters(f.mechanical_filters);
+        if (typeof f.candidate_budget === "number") setCandidateBudget(f.candidate_budget);
+        if (typeof f.rerank_prompt === "string") setRerankPrompt(f.rerank_prompt);
+
+        const nextSig = feedSignature(f);
+        const subsChanged =
+          Array.isArray(f.subqueries) &&
+          JSON.stringify(f.subqueries) !== JSON.stringify(prevSubs);
+        if (nextSig !== feedSignatureRef.current) {
+          feedSignatureRef.current = nextSig;
+          if (subsChanged) reloadFeeds();
+          if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
+          postsDebounceRef.current = setTimeout(() => loadPosts(feedId), 600);
         }
-      }
-      if (d.feed?.mechanical_filters) {
-        const incomingJson = JSON.stringify(d.feed.mechanical_filters);
-        if (incomingJson !== lastMechanicalFiltersJsonRef.current) {
-          lastMechanicalFiltersJsonRef.current = incomingJson;
-          setMechanicalFilters(d.feed.mechanical_filters);
-          configChanged = true;
-        }
-      }
-      if (typeof d.feed?.candidate_budget === "number" &&
-          d.feed.candidate_budget !== lastBudgetRef.current) {
-        lastBudgetRef.current = d.feed.candidate_budget;
-        setCandidateBudget(d.feed.candidate_budget);
-      }
-      if (typeof d.feed?.rerank_prompt === "string" &&
-          d.feed.rerank_prompt !== rerankPrompt) {
-        setRerankPrompt(d.feed.rerank_prompt);
-        configChanged = true;
-      }
-      if (configChanged) {
-        if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
-        postsDebounceRef.current = setTimeout(() => {
-          loadPosts(feedId);
-        }, 600);
       }
       const last = msgs[msgs.length - 1];
       if (last?.role === "assistant" && parseMessage(last.content).options.length > 0) {
@@ -523,17 +530,20 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   function finalizeNow() {
     if (loading) return;
-    send("Just go ahead and make my feed now with what you've got — pick reasonable defaults for anything we haven't covered yet.");
+    interviewModeRef.current = false;
+    send("Go ahead and finalize the feed now with what you've got — pick reasonable defaults for anything we haven't covered.");
   }
 
   function askForQuestions() {
     if (loading) return;
-    send("Help me build my prompt — walk me through it step by step and ask me questions to figure out what I want.");
+    interviewModeRef.current = true;
+    send("Help me build my feed — walk me through it step by step.");
   }
 
   function cancelQuestions() {
     if (loading) return;
-    send("Cancel — stop with the questions, let me just chat freely.");
+    interviewModeRef.current = false;
+    send("Actually, let's just chat — no more options lists.");
   }
 
   function submitChat() {
@@ -586,6 +596,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                 hits={pipelineHits}
                 images={pipelineImages}
                 model={pipelineModel}
+                thinkingEnabled={pipelineThinkingEnabled}
                 topK={25}
               />
             </div>
@@ -1156,10 +1167,12 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           candidateBudget={candidateBudget}
           rerankPrompt={rerankPrompt}
           rerankModel={rerankModel}
+          rerankThinkingEnabled={rerankThinkingEnabled}
           onMechanicalChange={saveMechanicalFilters}
           onSubqueriesChange={saveSubqueries}
           onCandidateBudgetChange={saveCandidateBudget}
           onRerankModelChange={saveRerankModel}
+          onRerankThinkingChange={saveRerankThinkingEnabled}
           postCount={postCount}
           rightPane={rightPane}
           onRightPaneChange={setRightPane}

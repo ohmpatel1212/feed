@@ -168,6 +168,8 @@ export interface DbFeed {
   rerank_prompt: string;
   // Anthropic model used for rerank. Defaults to DEFAULT_RERANK_MODEL.
   rerank_model: string;
+  // When true, pass extended-thinking config to the rerank model.
+  rerank_thinking_enabled: boolean;
   published_rkey: string | null;
   is_active: boolean;
   color: string | null;
@@ -184,6 +186,7 @@ interface DbFeedRow {
   candidate_budget: number | null;
   rerank_prompt: string | null;
   rerank_model: string | null;
+  rerank_thinking_enabled: boolean | null;
   published_rkey: string | null;
   is_active: boolean;
   color: string | null;
@@ -218,6 +221,7 @@ function rowToFeed(row: DbFeedRow): DbFeed {
       row.rerank_model && row.rerank_model.length > 0
         ? row.rerank_model
         : DEFAULT_RERANK_MODEL,
+    rerank_thinking_enabled: row.rerank_thinking_enabled === true,
     published_rkey: row.published_rkey,
     is_active: row.is_active,
     color: row.color,
@@ -285,6 +289,7 @@ export async function updateFeed(
     candidate_budget?: number;
     rerank_prompt?: string;
     rerank_model?: string;
+    rerank_thinking_enabled?: boolean;
     published_rkey?: string;
     is_active?: boolean;
     color?: string;
@@ -297,10 +302,10 @@ export async function updateFeed(
     `UPDATE feeds SET
        name = $1,
        mechanical_filters = $2, subqueries = $3, candidate_budget = $4,
-       rerank_prompt = $5, rerank_model = $6,
-       published_rkey = $7, is_active = $8, color = $9,
+       rerank_prompt = $5, rerank_model = $6, rerank_thinking_enabled = $7,
+       published_rkey = $8, is_active = $9, color = $10,
        updated_at = now()
-     WHERE id = $10 RETURNING *`,
+     WHERE id = $11 RETURNING *`,
     [
       updates.name ?? feed.name,
       JSON.stringify(updates.mechanical_filters ?? feed.mechanical_filters),
@@ -308,6 +313,7 @@ export async function updateFeed(
       updates.candidate_budget ?? feed.candidate_budget,
       updates.rerank_prompt ?? feed.rerank_prompt,
       updates.rerank_model ?? feed.rerank_model,
+      updates.rerank_thinking_enabled ?? feed.rerank_thinking_enabled,
       updates.published_rkey ?? feed.published_rkey,
       updates.is_active ?? feed.is_active,
       updates.color ?? feed.color,
@@ -446,6 +452,7 @@ export interface PreviewStageEvent {
   hits?: number;        // total vector-search hits before the cap
   images?: number;
   model?: string;
+  thinking_enabled?: boolean;
 }
 
 export async function getFeedPreviewPosts(
@@ -503,6 +510,7 @@ export async function getFeedPreviewPosts(
           topK: limit,
           systemPrompt: feed.rerank_prompt,
           model: feed.rerank_model,
+          thinkingEnabled: feed.rerank_thinking_enabled,
           withImages: true,
           onRequestSent: ({ candidates, images, model }) => {
             onStage?.({
@@ -511,6 +519,7 @@ export async function getFeedPreviewPosts(
               hits: hits.length,
               images,
               model,
+              thinking_enabled: feed.rerank_thinking_enabled,
             });
           },
           onFirstToken: () => {

@@ -18,6 +18,10 @@ export interface PipelineLoaderProps {
                         // show "80 / 117" when truncation kicked in
   images?: number;
   model?: string;
+  // Whether extended thinking was actually enabled on the rerank call. When
+  // false, the "thinking" sub-line shows that — the time we're displaying
+  // is just TTFT, not real reasoning.
+  thinkingEnabled?: boolean;
   // Posts written by the model so far. Optional — when omitted, the
   // ranking sub-line just shows the elapsed timer.
   written?: number;
@@ -47,7 +51,7 @@ function fmtSec(ms: number | undefined): string {
  * caller only needs to push the current `stage`.
  */
 export default function PipelineLoader(props: PipelineLoaderProps) {
-  const { stage, candidates, hits, images, model, written, topK } = props;
+  const { stage, candidates, hits, images, model, thinkingEnabled, written, topK } = props;
   const [now, setNow] = useState(() => performance.now());
   const timingsRef = useRef<StageTimings>({});
 
@@ -137,6 +141,9 @@ export default function PipelineLoader(props: PipelineLoaderProps) {
       : T.thinking_ended_ms !== undefined
       ? "done"
       : "";
+  // When extended thinking is off, the gap before first token is just normal
+  // inference latency — surface that so the timer isn't misleading.
+  const thinkingOff = thinkingEnabled === false;
   let s1Sub: React.ReactNode;
   if (stage === "thinking" && T.thinking_started_ms !== undefined) {
     s1Sub = (
@@ -144,7 +151,9 @@ export default function PipelineLoader(props: PipelineLoaderProps) {
         <span className="cur-pl-accent">{fmtSec(now - T.thinking_started_ms)}</span>
         {candCountStr ? ` · ${candCountStr}` : ""}
         {images !== undefined && images > 0 ? ` · ${images} images` : ""}
-        <span className="cur-pl-detail">{model ?? ""}</span>
+        <span className="cur-pl-detail">
+          {thinkingOff ? "thinking off — TTFT only" : model ?? ""}
+        </span>
       </>
     );
   } else if (T.thinking_ended_ms !== undefined && T.thinking_started_ms !== undefined) {
@@ -152,6 +161,7 @@ export default function PipelineLoader(props: PipelineLoaderProps) {
       <span className="cur-pl-muted">
         {fmtSec(T.thinking_ended_ms - T.thinking_started_ms)}
         {candCountStr ? ` · ${candCountStr}` : ""}
+        {thinkingOff ? " · off" : ""}
       </span>
     );
   } else {

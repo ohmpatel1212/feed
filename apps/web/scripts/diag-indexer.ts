@@ -24,7 +24,7 @@ import { bskyQuery } from "../src/lib/bsky-pg";
     `SELECT column_name FROM information_schema.columns
       WHERE table_schema='bsky' AND table_name='posts'`
   );
-  const colNames = cols.rows.map((r: { column_name: string }) => r.column_name);
+  const colNames = cols.rows.map((r) => (r as { column_name: string }).column_name);
   const tcol = colNames.includes("indexed_at")
     ? "indexed_at"
     : colNames.includes("inserted_at")

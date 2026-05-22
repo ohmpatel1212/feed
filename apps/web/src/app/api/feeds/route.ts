@@ -51,6 +51,7 @@ export async function PATCH(req: NextRequest) {
     candidate_budget,
     rerank_prompt,
     rerank_model,
+    rerank_thinking_enabled,
   } = body as {
     id?: number;
     name?: string;
@@ -59,6 +60,7 @@ export async function PATCH(req: NextRequest) {
     candidate_budget?: number;
     rerank_prompt?: string;
     rerank_model?: string;
+    rerank_thinking_enabled?: boolean;
   };
 
   if (!id)
@@ -98,6 +100,9 @@ export async function PATCH(req: NextRequest) {
   }
   if (typeof rerank_model === "string" && rerank_model.length > 0) {
     updates.rerank_model = rerank_model;
+  }
+  if (typeof rerank_thinking_enabled === "boolean") {
+    updates.rerank_thinking_enabled = rerank_thinking_enabled;
   }
 
   const updated = await updateFeed(id, updates);

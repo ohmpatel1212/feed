@@ -18,10 +18,12 @@ interface FilterPanelProps {
   candidateBudget: number;
   rerankPrompt: string;
   rerankModel: string;
+  rerankThinkingEnabled: boolean;
   onMechanicalChange: (filters: MechanicalFilters) => void;
   onSubqueriesChange: (subs: string[]) => void;
   onCandidateBudgetChange: (n: number) => void;
   onRerankModelChange: (model: string) => void;
+  onRerankThinkingChange: (enabled: boolean) => void;
   postCount: number;
   rightPane?: "chat" | "tune";
   onRightPaneChange?: (pane: "chat" | "tune") => void;
@@ -36,10 +38,12 @@ export default function FilterPanel({
   candidateBudget,
   rerankPrompt,
   rerankModel,
+  rerankThinkingEnabled,
   onMechanicalChange,
   onSubqueriesChange,
   onCandidateBudgetChange,
   onRerankModelChange,
+  onRerankThinkingChange,
   postCount,
   rightPane,
   onRightPaneChange,
@@ -342,6 +346,11 @@ export default function FilterPanel({
                 ))}
               </select>
             </div>
+            <Toggle
+              label="Extended thinking (slower, can sharpen borderline ranks)"
+              checked={rerankThinkingEnabled}
+              onChange={onRerankThinkingChange}
+            />
           </div>
 
           {/* ADVANCED — collapsible */}

@@ -90,12 +90,16 @@ export async function rerank(opts: {
   // When true, attach `image` content blocks for candidates that have images
   // (uses `hit.image_urls`). Capped at MAX_RERANK_IMAGES total.
   withImages?: boolean;
+  // When true, enable Anthropic extended thinking on the call. The model
+  // emits a private reasoning block before the JSON ranking, which can help
+  // on borderline candidates at the cost of latency + tokens.
+  thinkingEnabled?: boolean;
   // Called once when the Anthropic request is dispatched. Carries the
   // candidate/image counts so a UI can render "Ranking … 80 candidates · 87 images".
   onRequestSent?: (info: RerankPhaseInfo) => void;
-  // Called once when the first text delta arrives from the model. The window
-  // between onRequestSent and onFirstToken is effectively the model's
-  // thinking / time-to-first-token; everything after is streaming output.
+  // Called once when the first text delta arrives from the model. With
+  // thinking off this is just TTFT; with thinking on it marks the end of
+  // the reasoning block and the start of the JSON output.
   onFirstToken?: () => void;
 }): Promise<RerankResult> {
   const { query, candidates, topK, systemPrompt } = opts;
@@ -139,9 +143,15 @@ export async function rerank(opts: {
 
   const system = systemPrompt + RERANK_OUTPUT_CONTRACT;
 
+  const thinkingEnabled = opts.thinkingEnabled === true;
+  // Budget needs headroom under max_tokens. 4096 max with ~1500 thinking
+  // leaves enough room for the JSON ranking output even on long candidate
+  // lists.
+  const THINKING_BUDGET = 1500;
+
   console.log(
     `[rerank] model=${model} candidates=${candidates.length} ` +
-      `images=${imagesAttached} topK=${topK}`
+      `images=${imagesAttached} topK=${topK} thinking=${thinkingEnabled}`
   );
   opts.onRequestSent?.({ candidates: candidates.length, images: imagesAttached, model });
 
@@ -153,6 +163,9 @@ export async function rerank(opts: {
     max_tokens: 4096,
     system,
     messages: [{ role: "user", content }],
+    ...(thinkingEnabled
+      ? { thinking: { type: "enabled" as const, budget_tokens: THINKING_BUDGET } }
+      : {}),
   });
 
   let firstTokenFired = false;
@@ -164,8 +177,11 @@ export async function rerank(opts: {
   });
 
   const finalMessage = await stream.finalMessage();
+  // With thinking enabled the first content block is a ThinkingBlock; the
+  // JSON ranking lives in the first TextBlock that follows.
+  const outputTextBlock = finalMessage.content.find((b) => b.type === "text");
   const text =
-    finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "";
+    outputTextBlock && outputTextBlock.type === "text" ? outputTextBlock.text : "";
   const parsed = safeParseArray(text);
   if (!Array.isArray(parsed)) {
     throw new Error("reranker output was not a JSON array");
