@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import Script from "next/script";
 import FilterPanel from "@/components/FilterPanel";
 import ShaderSendButton from "@/components/ShaderSendButton";
 import PipelineLoader, { type PipelineStage } from "@/components/PipelineLoader";
@@ -36,6 +35,7 @@ interface Post {
   has_images: boolean;
   image_count: number;
   image_alts: string[];
+  image_urls: string[];
   is_reply: boolean;
   reply_parent_uri: string | null;
 }
@@ -93,15 +93,29 @@ function externalHost(url: string | null): string | null {
   }
 }
 
-type ViewMode = "card" | "embed";
-const VIEW_MODE_KEY = "curator:viewMode";
-const HIDE_UNAVAIL_KEY = "curator:hideUnavailable";
 const SHOW_DEBUG_KEY = "curator:showDebug";
 
-declare global {
-  interface Window {
-    bluesky?: { scan: (root?: Element | Document) => void };
-  }
+const HASHTAG_RE = /(#[\w\u00C0-\u024F]+)/g;
+
+function renderPostText(text: string): React.ReactNode[] {
+  const parts = text.split(HASHTAG_RE);
+  return parts.map((part, i) => {
+    if (HASHTAG_RE.test(part)) {
+      const tag = part.slice(1);
+      return (
+        <a
+          key={i}
+          href={`https://bsky.app/hashtag/${encodeURIComponent(tag)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="cur-post-hashtag"
+        >
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
 }
 
 const RIGHT_W_KEY = "curator:rightWidth";
@@ -137,23 +151,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     RIGHT_W_KEY, 380, RIGHT_MIN, RIGHT_MAX, "right"
   );
 
-  const [viewMode, setViewModeState] = useState<ViewMode>(() => {
-    if (typeof window === "undefined") return "card";
-    const stored = window.localStorage.getItem(VIEW_MODE_KEY);
-    return stored === "embed" ? "embed" : "card";
-  });
-  function setViewMode(next: ViewMode) {
-    setViewModeState(next);
-    try { window.localStorage.setItem(VIEW_MODE_KEY, next); } catch { /* ignore */ }
-  }
-  const [hideUnavailable, setHideUnavailableState] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(HIDE_UNAVAIL_KEY) !== "false";
-  });
-  function setHideUnavailable(next: boolean) {
-    setHideUnavailableState(next);
-    try { window.localStorage.setItem(HIDE_UNAVAIL_KEY, String(next)); } catch { /* ignore */ }
-  }
   const [showDebug, setShowDebugState] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem(SHOW_DEBUG_KEY) !== "false";
@@ -162,12 +159,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     setShowDebugState(next);
     try { window.localStorage.setItem(SHOW_DEBUG_KEY, String(next)); } catch { /* ignore */ }
   }
-  // Per-feed: unavailable URIs from the Bluesky availability probe. Lives
-  // inside the workbench so it resets atomically when the feedId-keyed
-  // component remounts on URL change.
-  const [unavailableUris, setUnavailableUris] = useState<Set<string>>(() => new Set());
-  const bskyAvailabilityCache = useRef<Map<string, boolean>>(new Map());
-
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -196,6 +187,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const interviewModeRef = useRef(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [postCount, setPostCount] = useState(0);
+  const [lightbox, setLightbox] = useState<{ urls: string[]; index: number } | null>(null);
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+      else if (e.key === "ArrowLeft") setLightbox((lb) => lb ? { ...lb, index: (lb.index - 1 + lb.urls.length) % lb.urls.length } : null);
+      else if (e.key === "ArrowRight") setLightbox((lb) => lb ? { ...lb, index: (lb.index + 1) % lb.urls.length } : null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
   const [postsLoading, setPostsLoading] = useState(false);
   const [pipelineStage, setPipelineStage] = useState<PipelineStage>("idle");
   const [pipelineCandidates, setPipelineCandidates] = useState<number | undefined>(undefined);
@@ -415,78 +417,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Re-scan Bluesky embeds when the visible post set changes.
-  useEffect(() => {
-    if (viewMode !== "embed") return;
-    const scan = () => window.bluesky?.scan?.();
-    scan();
-    const t = setTimeout(scan, 300);
-    return () => clearTimeout(t);
-  }, [viewMode, posts, hideUnavailable, unavailableUris]);
-
-  // Detect unavailable posts via the public AT Proto API.
-  useEffect(() => {
-    if (viewMode !== "embed") return;
-    if (posts.length === 0) return;
-
-    const ac = new AbortController();
-    const cache = bskyAvailabilityCache.current;
-
-    async function check(uri: string) {
-      const cached = cache.get(uri);
-      if (cached !== undefined) {
-        if (cached === false) {
-          setUnavailableUris((prev) =>
-            prev.has(uri) ? prev : new Set(prev).add(uri)
-          );
-        }
-        return;
-      }
-      try {
-        const res = await fetch(
-          `https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=${encodeURIComponent(
-            uri
-          )}&depth=0&parentHeight=0`,
-          { signal: ac.signal }
-        );
-        if (!res.ok) {
-          cache.set(uri, false);
-          setUnavailableUris((prev) =>
-            prev.has(uri) ? prev : new Set(prev).add(uri)
-          );
-          return;
-        }
-        const data = (await res.json()) as {
-          thread?: {
-            post?: {
-              labels?: { val?: string }[];
-              author?: { labels?: { val?: string }[] };
-            };
-          };
-        };
-        const post = data.thread?.post;
-        const hasNoUnauth =
-          post?.labels?.some((l) => l.val === "!no-unauthenticated") ||
-          post?.author?.labels?.some((l) => l.val === "!no-unauthenticated") ||
-          false;
-        if (!post || hasNoUnauth) {
-          cache.set(uri, false);
-          setUnavailableUris((prev) =>
-            prev.has(uri) ? prev : new Set(prev).add(uri)
-          );
-        } else {
-          cache.set(uri, true);
-        }
-      } catch (e) {
-        if ((e as { name?: string }).name === "AbortError") return;
-      }
-    }
-
-    posts.forEach((p) => { check(p.uri); });
-
-    return () => ac.abort();
-  }, [viewMode, posts]);
-
   async function send(text: string) {
     if (!text.trim() || loading) return;
     setInput("");
@@ -600,11 +530,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   return (
     <>
-      <Script
-        src="https://embed.bsky.app/static/embed.js"
-        strategy="afterInteractive"
-        onLoad={() => window.bluesky?.scan?.()}
-      />
       <div className="cur-workbench" data-right-pane={rightPane}>
         {/* POSTS PANE (middle) */}
         <div className="cur-feed-posts">
@@ -622,68 +547,34 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
             </div>
           )}
           <div className="cur-feed-posts-header">
-            <div className="cur-feed-stage" />
-            <div className="cur-view-toggle" role="tablist" aria-label="Post view">
+            <span className="cur-toolbar-count">
+              {posts.length > 0 && `${posts.length} post${posts.length === 1 ? "" : "s"}`}
+            </span>
+            <div className="cur-toolbar">
               <button
                 type="button"
-                role="tab"
-                aria-selected={viewMode === "card"}
-                className={`cur-view-seg${viewMode === "card" ? " active" : ""}`}
-                onClick={() => setViewMode("card")}
+                className={`cur-toolbar-btn${showDebug ? " active" : ""}`}
+                onClick={() => setShowDebug(!showDebug)}
+                title="Toggle debug scores"
               >
-                Cards
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+                Debug
               </button>
               <button
                 type="button"
-                role="tab"
-                aria-selected={viewMode === "embed"}
-                className={`cur-view-seg${viewMode === "embed" ? " active" : ""}`}
-                onClick={() => setViewMode("embed")}
+                className="cur-toolbar-btn"
+                disabled={postsLoading}
+                onClick={() => loadPosts(feedId)}
+                title="Refresh posts"
               >
-                Bluesky embed
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                </svg>
+                Refresh
               </button>
             </div>
-            {viewMode === "embed" && (
-              <label
-                className="cur-unavail-toggle"
-                title="Hide posts whose Bluesky iframe renders the 'post not found / deleted' template"
-              >
-                <input
-                  type="checkbox"
-                  checked={hideUnavailable}
-                  onChange={(e) => setHideUnavailable(e.target.checked)}
-                />
-                <span>
-                  Hide unavailable
-                  {unavailableUris.size > 0 && (
-                    <span className="cur-unavail-count">
-                      {" "}
-                      ({unavailableUris.size})
-                    </span>
-                  )}
-                </span>
-              </label>
-            )}
-            <label
-              className="cur-unavail-toggle"
-              title="Show vector similarity, reranker score, and reranker reason on each card"
-            >
-              <input
-                type="checkbox"
-                checked={showDebug}
-                onChange={(e) => setShowDebug(e.target.checked)}
-              />
-              <span>Debug</span>
-            </label>
-            <button
-              type="button"
-              className="cur-refresh"
-              disabled={postsLoading}
-              onClick={() => loadPosts(feedId)}
-              title="Refresh posts"
-            >
-              ↻ Refresh
-            </button>
           </div>
           <div className="cur-feed-posts-inner">
             {posts.length === 0 ? (
@@ -703,95 +594,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </>
                 )}
               </div>
-            ) : viewMode === "embed" ? (
-              posts.map((post) => {
-                const bskyUrl = (() => {
-                  const m = post.uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                  return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                })();
-                const replyParentUrl = (() => {
-                  if (!post.reply_parent_uri) return null;
-                  const m = post.reply_parent_uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
-                  return m ? `https://bsky.app/profile/${m[1]}/post/${m[2]}` : null;
-                })();
-                if (hideUnavailable && unavailableUris.has(post.uri)) {
-                  return null;
-                }
-                return (
-                  <div
-                    key={post.uri}
-                    className="cur-post-embed-wrap"
-                    data-bsky-uri={post.uri}
-                  >
-                    <div className="cur-post-embed-frame">
-                      {post.is_reply && (
-                        <div className="cur-post-reply-banner cur-post-reply-banner-embed">
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                            <polyline points="9 17 4 12 9 7" />
-                            <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
-                          </svg>
-                          {replyParentUrl ? (
-                            <a href={replyParentUrl} target="_blank" rel="noopener noreferrer">
-                              Replying to a post
-                            </a>
-                          ) : (
-                            <span>Reply</span>
-                          )}
-                        </div>
-                      )}
-                      <div className="cur-post-embed-meta">
-                        {bskyUrl && (
-                          <a
-                            href={bskyUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="cur-post-open"
-                            title="Open in Bluesky"
-                          >
-                            Open ↗
-                          </a>
-                        )}
-                      </div>
-                      {showDebug && (
-                        <div className="cur-post-debug">
-                          <span className="cur-post-debug-row">
-                            <span className="cur-post-debug-label">vec</span>
-                            <span>{(post.score * 100).toFixed(1)}%</span>
-                            {typeof post.rerank_score === "number" && (
-                              <>
-                                <span className="cur-post-debug-label">rr</span>
-                                <span>{post.rerank_score}</span>
-                              </>
-                            )}
-                            {post.like_nsfw && (
-                              <span className="cur-post-debug-flag">nsfw?</span>
-                            )}
-                          </span>
-                          {post.rerank_reason && (
-                            <span className="cur-post-debug-reason">
-                              &ldquo;{post.rerank_reason}&rdquo;
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <div
-                      className="bluesky-embed"
-                      data-bluesky-uri={post.uri}
-                      data-bluesky-embed-color-mode="light"
-                    >
-                      <p>{post.text}</p>
-                      {bskyUrl && (
-                        <p>
-                          <a href={bskyUrl} target="_blank" rel="noopener noreferrer">
-                            View on Bluesky
-                          </a>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
             ) : (
               posts.map((post) => {
                 const bskyUrl = (() => {
@@ -884,7 +686,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                       </div>
                     </header>
 
-                    <div className="cur-post-card-body">{post.text}</div>
+                    <div className="cur-post-card-body">{renderPostText(post.text)}</div>
 
                     {post.external_uri && (
                       <a
@@ -918,15 +720,25 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                       </a>
                     )}
 
-                    {post.has_images && post.image_count > 0 && (
+                    {post.has_images && post.image_urls.length > 0 && (
+                      <div className={`cur-post-images cur-post-images-${Math.min(post.image_urls.length, 4)}`}>
+                        {post.image_urls.slice(0, 4).map((url, i) => (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            key={i}
+                            src={url}
+                            alt={post.image_alts[i] || ""}
+                            className="cur-post-img"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            onClick={() => setLightbox({ urls: post.image_urls, index: i })}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {post.has_images && post.image_urls.length === 0 && post.image_count > 0 && (
                       <div className="cur-post-images-note">
                         {post.image_count} image{post.image_count === 1 ? "" : "s"}
-                        {post.image_alts.filter(Boolean).length > 0 && (
-                          <span className="cur-post-images-alt">
-                            {" — "}
-                            {post.image_alts.filter(Boolean).join(" · ")}
-                          </span>
-                        )}
                       </div>
                     )}
 
@@ -1200,6 +1012,60 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           style={{ ["--cur-right-w" as string]: `${rightWidth}px` }}
         />
       </div>
+
+      {/* Image lightbox */}
+      {lightbox && (
+        <div className="cur-lightbox" onClick={() => setLightbox(null)}>
+          <button
+            className="cur-lightbox-close"
+            onClick={() => setLightbox(null)}
+            aria-label="Close lightbox"
+          >
+            ✕
+          </button>
+          {lightbox.urls.length > 1 && (
+            <>
+              <button
+                className="cur-lightbox-nav cur-lightbox-prev"
+                aria-label="Previous image"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLightbox((lb) =>
+                    lb ? { ...lb, index: (lb.index - 1 + lb.urls.length) % lb.urls.length } : null
+                  );
+                }}
+              >
+                ‹
+              </button>
+              <button
+                className="cur-lightbox-nav cur-lightbox-next"
+                aria-label="Next image"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLightbox((lb) =>
+                    lb ? { ...lb, index: (lb.index + 1) % lb.urls.length } : null
+                  );
+                }}
+              >
+                ›
+              </button>
+            </>
+          )}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={lightbox.urls[lightbox.index]}
+            alt=""
+            className="cur-lightbox-img"
+            referrerPolicy="no-referrer"
+            onClick={(e) => e.stopPropagation()}
+          />
+          {lightbox.urls.length > 1 && (
+            <div className="cur-lightbox-counter">
+              {lightbox.index + 1} / {lightbox.urls.length}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
