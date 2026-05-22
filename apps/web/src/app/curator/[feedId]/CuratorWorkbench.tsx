@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Script from "next/script";
 import VoiceCards, { type Voice } from "@/components/VoiceCards";
 import FilterPanel from "@/components/FilterPanel";
@@ -171,7 +172,25 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // ?prompt=<text> on the URL — set by /introspect's suggested-feed cards.
+  // Consume once, drop it from the URL so a remount doesn't re-seed.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const promptParam = searchParams.get("prompt");
+  const promptConsumedRef = useRef(false);
+  useEffect(() => {
+    if (promptConsumedRef.current) return;
+    if (!promptParam) return;
+    promptConsumedRef.current = true;
+    setInput(promptParam);
+    // Focus on the next tick so the textarea is mounted by then.
+    setTimeout(() => inputRef.current?.focus(), 0);
+    router.replace(pathname);
+  }, [promptParam, pathname, router]);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [postCount, setPostCount] = useState(0);
@@ -1182,6 +1201,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               }}
             >
               <textarea
+                ref={inputRef}
                 className="cur-input"
                 rows={1}
                 value={input}
