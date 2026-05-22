@@ -426,6 +426,7 @@ export interface FeedPreviewPost {
   has_images: boolean;
   image_count: number;
   image_alts: string[];
+  image_urls: string[];
   is_reply: boolean;
   reply_parent_uri: string | null;
 }
@@ -480,9 +481,7 @@ export async function getFeedPreviewPosts(
       subqueries: feed.subqueries,
       totalBudget: feed.candidate_budget,
       filter,
-      // Only round-trip the AppView for image URLs when we'll actually
-      // pass them into the reranker.
-      withImages: willRerank,
+      withImages: true,
     });
     const tSearch = performance.now();
 
@@ -584,6 +583,7 @@ export async function getFeedPreviewPosts(
         has_images: h.has_images,
         image_count: h.image_count,
         image_alts: h.image_alts,
+        image_urls: h.image_urls,
         is_reply: h.is_reply,
         reply_parent_uri: h.reply_parent_uri,
       };
