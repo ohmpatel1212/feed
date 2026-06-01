@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import Onboarding, { useAuth, type UserProfile } from "@/components/Onboarding";
 import ImportMemoryModal from "@/components/ImportMemoryModal";
+import FeedbackModal from "@/components/FeedbackModal";
 import ShaderLogo from "@/components/ShaderLogo";
 import { authedFetch } from "@/lib/authed-fetch";
 import { useResizable } from "./useResizable";
@@ -79,6 +80,7 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
   const [feeds, setFeeds] = useState<SavedFeed[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [showImportMemory, setShowImportMemory] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [activePostCount, setActivePostCount] = useState(0);
   const [mobileTab, setMobileTab] = useState<MobileTab>("chat");
   const [optionsUnread, setOptionsUnread] = useState(false);
@@ -500,6 +502,18 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
                   <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
                 </svg>
               </button>
+              <button
+                onClick={() => setShowFeedback(true)}
+                className="cur-topbar-icon"
+                title="Send feedback"
+                aria-label="Send feedback"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  <line x1="8" y1="10" x2="16" y2="10" />
+                  <line x1="8" y1="13" x2="13" y2="13" />
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -550,6 +564,14 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
           <ImportMemoryModal
             onClose={() => setShowImportMemory(false)}
             onImported={handleMemoryImported}
+          />
+        )}
+
+        {showFeedback && (
+          <FeedbackModal
+            onClose={() => setShowFeedback(false)}
+            feedId={activeFeed ? Number(activeFeed.id) : null}
+            feedName={activeFeed?.name ?? null}
           />
         )}
       </div>
