@@ -1,40 +1,46 @@
 /**
- * Vector Search → Postgres hydration.
+ * pgvector KNN search over bsky.posts (Cloud SQL bsky-db).
  *
  * Multi-query design (curator redesign):
  * 1. For each subquery, embed with Gemini (`gemini-embedding-001`, 768d,
- *    RETRIEVAL_QUERY) and call Vertex `findNeighbors` with k = floor(N / M).
- * 2. Union the result URIs across subqueries, deduping on URI and keeping
- *    the max raw similarity score.
- * 3. Rescale raw cosine similarity from [-1, 1] to [0, 1] via (x + 1) / 2.
- * 4. Hydrate the union from Postgres (bsky.posts ⨝ authors ⨝ post_engagement).
- * 5. AppView label gate (NSFW deny-list).
+ *    RETRIEVAL_QUERY) and run one SQL KNN with k = floor(N / M). The query
+ *    does retrieval + metadata filter + engagement/author join + field
+ *    selection in a single statement — there is no separate hydrate step.
+ * 2. Union the result rows across subqueries, deduping on URI and keeping
+ *    the max vector_score.
+ * 3. AppView label gate (NSFW deny-list).
  *
- * Post text + display fields live in `bsky.posts`; the vector index carries
- * only filter restricts. The runtime needs ADC with `roles/aiplatform.user`
+ * `<=>` is cosine *distance* in [0, 2]; we map it to the documented
+ * vector_score contract of [0, 1] via `1 - distance / 2` in SQL.
+ *
+ * HNSW recall knob: `hnsw.ef_search = 250` is set at the database level
+ * (ALTER DATABASE), so every pooled connection inherits it and the read path
+ * stays a plain one-shot query — no SET LOCAL / transaction needed.
+ *
+ * The runtime needs ADC with `roles/aiplatform.user` (query embedding only)
  * + `roles/secretmanager.secretAccessor` on `bsky-database-url`.
  */
 
-import { v1 } from "@google-cloud/aiplatform";
 import { GoogleGenAI } from "@google/genai";
 import { bskyQuery } from "./bsky-pg";
 import { LIKE_NSFW_DESCRIPTION_KEYWORDS } from "./defaults";
 import { onAdcChange } from "./adc-watcher";
 
-const { MatchServiceClient } = v1;
-
 const VERTEX_PROJECT = process.env.VERTEX_PROJECT ?? "timelines-492720";
 const VERTEX_LOCATION = process.env.VERTEX_LOCATION ?? "us-central1";
-const VERTEX_INDEX_ENDPOINT_ID =
-  process.env.VERTEX_INDEX_ENDPOINT_ID ?? "5941683870687559680";
-const VERTEX_INDEX_ENDPOINT_HOST =
-  process.env.VERTEX_INDEX_ENDPOINT_HOST ??
-  "1238902659.us-central1-777152549518.vdb.vertexai.goog";
-const VERTEX_DEPLOYED_INDEX_ID =
-  process.env.VERTEX_DEPLOYED_INDEX_ID ?? "happy_feed_v2";
 
 const EMBEDDING_MODEL = "gemini-embedding-001";
 const EMBEDDING_DIMENSION = 768;
+
+// The HNSW index is PARTIAL: `WHERE ingested_at_us >= INDEX_INGEST_CUTOFF_US`
+// (a fixed point ~3 days before the index was built — see DECISIONS.md #12 and
+// scripts/build-hnsw.mjs). Every KNN query MUST carry this same literal floor,
+// otherwise the planner can't prove the query implies the partial predicate and
+// falls back to an exact scan over all 36M rows. The cutoff is fixed, so the
+// indexed/searchable window grows past 3 days over time (up to the 14d
+// retention) rather than rolling — offered feed windows are capped at 3d to
+// stay honest about what's reliably searchable today.
+const INDEX_INGEST_CUTOFF_US = "1780253847390000";
 
 // AppView host + the official Bluesky moderation labeler. We ask the AppView
 // to attach this labeler's labels onto getPosts responses so we can drop
@@ -43,16 +49,6 @@ const APPVIEW_HOST = process.env.BLUESKY_APPVIEW_HOST ?? "https://public.api.bsk
 const OFFICIAL_LABELER_DID = "did:plc:ar7c4by46qjdydhdevvrndac";
 const GET_POSTS_BATCH = 25; // app.bsky.feed.getPosts caps at 25 URIs per call
 const GET_PROFILES_BATCH = 25; // app.bsky.actor.getProfiles caps at 25 actors per call
-
-let _matchClient: InstanceType<typeof MatchServiceClient> | null = null;
-function matchClient() {
-  if (!_matchClient) {
-    _matchClient = new MatchServiceClient({
-      apiEndpoint: VERTEX_INDEX_ENDPOINT_HOST,
-    });
-  }
-  return _matchClient;
-}
 
 let _genai: GoogleGenAI | null = null;
 function genai() {
@@ -67,10 +63,9 @@ function genai() {
 }
 
 onAdcChange(() => {
-  const had = _matchClient !== null || _genai !== null;
-  _matchClient = null;
+  const had = _genai !== null;
   _genai = null;
-  if (had) console.log("[vector-search] Vertex / Gemini clients reset after ADC change");
+  if (had) console.log("[vector-search] Gemini client reset after ADC change");
 });
 
 export interface VectorHit {
@@ -78,9 +73,9 @@ export interface VectorHit {
   did: string;
   text: string;
   created_at: string;
-  // Rescaled cosine similarity in [0, 1]. The raw dot product from Vertex sits
-  // in [-1, 1] for L2-normalized Gemini vectors; we apply (x + 1) / 2 here so
-  // downstream callers don't have to know about the dot-product convention.
+  // Cosine similarity mapped to [0, 1]: `1 - (embedding <=> query) / 2`.
+  // Cosine distance lives in [0, 2], so this keeps the documented [0, 1]
+  // contract that downstream consumers (UI, search-runs) rely on.
   vector_score: number;
 
   langs: string[];
@@ -112,7 +107,7 @@ export interface VectorHit {
   author_avatar_cid: string | null;
 
   // True when the author's description matches one of the heuristics in
-  // LIKE_NSFW_DESCRIPTION_KEYWORDS. Computed by hydrateFromPostgres; always
+  // LIKE_NSFW_DESCRIPTION_KEYWORDS. Computed in searchPosts; always
   // populated (boolean, never undefined).
   like_nsfw: boolean;
 
@@ -133,8 +128,8 @@ export interface SearchFilter {
   didExclude?: string[];
   hashtags?: string[];
   selfLabelsDeny?: string[];
-  // Drop hits where hit.like_nsfw === true. Computed after hydration, so
-  // it applies only to the union (not the Vertex pre-filter).
+  // Drop hits where hit.like_nsfw === true. Computed after the KNN query, so
+  // it applies only to the union (not the SQL pre-filter).
   excludeLikelyNsfw?: boolean;
   minLikeCount?: number;
   minRepostCount?: number;
@@ -177,59 +172,12 @@ async function embedQuery(query: string): Promise<number[]> {
   return values;
 }
 
-const boolToken = (b: boolean): string => (b ? "true" : "false");
-
-function buildQueryRestricts(filter?: SearchFilter): Array<{
-  namespace: string;
-  allowList?: string[];
-  denyList?: string[];
-}> {
-  const out: Array<{ namespace: string; allowList?: string[]; denyList?: string[] }> = [];
-  if (!filter) return out;
-  if (filter.lang?.length) out.push({ namespace: "langs", allowList: filter.lang });
-  if (filter.didExclude?.length) out.push({ namespace: "did", denyList: filter.didExclude });
-  if (filter.hasImages !== undefined) out.push({ namespace: "has_images", allowList: [boolToken(filter.hasImages)] });
-  if (filter.hasVideo !== undefined) out.push({ namespace: "has_video", allowList: [boolToken(filter.hasVideo)] });
-  if (filter.hasQuote !== undefined) out.push({ namespace: "has_quote", allowList: [boolToken(filter.hasQuote)] });
-  if (filter.hasExternalLink !== undefined) out.push({ namespace: "has_external_link", allowList: [boolToken(filter.hasExternalLink)] });
-  if (filter.isReply !== undefined) out.push({ namespace: "is_reply", allowList: [boolToken(filter.isReply)] });
-  if (filter.hashtags?.length) out.push({ namespace: "hashtags", allowList: filter.hashtags.map((t) => t.toLowerCase()) });
-  if (filter.selfLabelsDeny?.length) out.push({ namespace: "self_labels", denyList: filter.selfLabelsDeny });
-  return out;
-}
-
-type NumericRestrict = {
-  namespace: string;
-  valueInt?: string;
-  op?: "GREATER_EQUAL" | "GREATER" | "LESS" | "LESS_EQUAL" | "EQUAL" | "NOT_EQUAL";
-};
-
-function buildNumericQueryRestricts(filter?: SearchFilter): NumericRestrict[] {
-  // schema_v >= 2 hides old-shape datapoints left over in the index from the
-  // pre-migration indexer (those points have no schema_v namespace so they
-  // don't satisfy the filter).
-  const out: NumericRestrict[] = [
-    { namespace: "schema_v", valueInt: "2", op: "GREATER_EQUAL" },
-  ];
-  if (!filter) return out;
-  if (filter.minLikeCount !== undefined) out.push({ namespace: "like_count", valueInt: String(filter.minLikeCount), op: "GREATER_EQUAL" });
-  if (filter.minRepostCount !== undefined) out.push({ namespace: "repost_count", valueInt: String(filter.minRepostCount), op: "GREATER_EQUAL" });
-  if (filter.minReplyCount !== undefined) out.push({ namespace: "reply_count", valueInt: String(filter.minReplyCount), op: "GREATER_EQUAL" });
-  if (filter.createdAfterUs !== undefined) out.push({ namespace: "created_at_us", valueInt: String(filter.createdAfterUs), op: "GREATER_EQUAL" });
-  if (filter.createdBeforeUs !== undefined) out.push({ namespace: "created_at_us", valueInt: String(filter.createdBeforeUs), op: "LESS_EQUAL" });
-  return out;
-}
-
-interface RawRestrict {
-  namespace?: string | null;
-  allowList?: string[] | null;
-}
-
 interface PgRow {
   uri: string;
   did: string;
   text: string;
   created_at: Date;
+  vector_score: number;
   langs: string[];
   has_images: boolean;
   has_video: boolean;
@@ -255,6 +203,128 @@ interface PgRow {
   author_handle: string | null;
   author_display_name: string | null;
   author_avatar_cid: string | null;
+}
+
+// One statement: KNN + SearchFilter predicates + engagement/author join +
+// full field selection. Each optional filter param is IS NULL-guarded so an
+// absent filter doesn't constrain the row set (notably $11 selfLabelsDeny —
+// an absent deny-list must not drop every row). Time bounds compare against
+// created_at_us (bigint, µs) which already has a btree index for the
+// exact-scan fallback; pgvector post-filters during the HNSW graph walk.
+const KNN_SQL = `
+SELECT
+  p.uri, p.did, p.text, p.created_at, p.langs,
+  p.has_images, p.has_video, p.has_quote, p.has_external_link,
+  (p.reply_parent_uri IS NOT NULL) AS is_reply,
+  p.reply_parent_uri, p.reply_root_uri,
+  p.image_count, p.image_alts,
+  p.external_uri, p.external_title, p.external_desc, p.quote_uri,
+  p.hashtags, p.mention_dids, p.domains, p.self_labels,
+  pe.like_count, pe.repost_count, pe.reply_count, pe.quote_count,
+  a.handle       AS author_handle,
+  a.display_name AS author_display_name,
+  a.avatar_cid   AS author_avatar_cid,
+  1 - (p.embedding <=> $1::halfvec) / 2 AS vector_score
+FROM bsky.posts p
+LEFT JOIN bsky.post_engagement pe ON pe.uri = p.uri
+LEFT JOIN bsky.authors a          ON a.did = p.did
+WHERE p.embedding IS NOT NULL
+  -- Partial-index floor (literal, NOT a param): lets the planner match the
+  -- partial HNSW index. Without it the KNN degrades to an exact scan.
+  AND p.ingested_at_us >= ${INDEX_INGEST_CUTOFF_US}
+  AND ($3::text[]   IS NULL OR p.langs && $3::text[])
+  AND ($4::bigint   IS NULL OR p.created_at_us >= $4::bigint)
+  AND ($5::bigint   IS NULL OR p.created_at_us <= $5::bigint)
+  AND ($6::boolean  IS NULL OR p.has_images = $6::boolean)
+  AND ($7::boolean  IS NULL OR p.has_video = $7::boolean)
+  AND ($8::boolean  IS NULL OR p.has_quote = $8::boolean)
+  AND ($9::boolean  IS NULL OR p.has_external_link = $9::boolean)
+  AND ($10::boolean IS NULL OR (p.reply_parent_uri IS NOT NULL) = $10::boolean)
+  AND ($11::text[]  IS NULL OR p.hashtags && $11::text[])
+  AND ($12::text[]  IS NULL OR NOT (p.self_labels && $12::text[]))
+  AND ($13::text[]  IS NULL OR p.did <> ALL($13::text[]))
+  AND (COALESCE(pe.like_count, 0)   >= $14::int)
+  AND (COALESCE(pe.repost_count, 0) >= $15::int)
+  AND (COALESCE(pe.reply_count, 0)  >= $16::int)
+ORDER BY p.embedding <=> $1::halfvec
+LIMIT $2
+`;
+
+// pgvector's text input format: "[f1,f2,...]".
+function toVectorLiteral(vec: number[]): string {
+  return "[" + vec.join(",") + "]";
+}
+
+/**
+ * Embed one subquery and run the single-statement KNN. Returns fully
+ * hydrated rows — there is no separate Postgres hydrate step.
+ */
+async function embedAndKnn(
+  query: string,
+  k: number,
+  filter?: SearchFilter
+): Promise<PgRow[]> {
+  const queryVec = await embedQuery(query);
+  const f = filter;
+  const params: unknown[] = [
+    toVectorLiteral(queryVec),
+    k,
+    f?.lang?.length ? f.lang : null,
+    // created_at_us is µs since epoch (~1.7e15) — within Number.MAX_SAFE_INTEGER,
+    // but pass as string so pg treats it as bigint text cleanly.
+    f?.createdAfterUs !== undefined ? String(f.createdAfterUs) : null,
+    f?.createdBeforeUs !== undefined ? String(f.createdBeforeUs) : null,
+    f?.hasImages ?? null,
+    f?.hasVideo ?? null,
+    f?.hasQuote ?? null,
+    f?.hasExternalLink ?? null,
+    f?.isReply ?? null,
+    f?.hashtags?.length ? f.hashtags.map((t) => t.toLowerCase()) : null,
+    f?.selfLabelsDeny?.length ? f.selfLabelsDeny : null,
+    f?.didExclude?.length ? f.didExclude : null,
+    f?.minLikeCount ?? 0,
+    f?.minRepostCount ?? 0,
+    f?.minReplyCount ?? 0,
+  ];
+  const res = await bskyQuery<PgRow>(KNN_SQL, params);
+  return res.rows;
+}
+
+function rowToHit(r: PgRow): VectorHit {
+  return {
+    uri: r.uri,
+    did: r.did,
+    text: r.text,
+    created_at: r.created_at.toISOString(),
+    vector_score: r.vector_score,
+    langs: r.langs,
+    has_images: r.has_images,
+    has_video: r.has_video,
+    has_quote: r.has_quote,
+    has_external_link: r.has_external_link,
+    is_reply: r.is_reply,
+    reply_parent_uri: r.reply_parent_uri,
+    reply_root_uri: r.reply_root_uri,
+    image_count: r.image_count,
+    image_alts: r.image_alts,
+    external_uri: r.external_uri,
+    external_title: r.external_title,
+    external_desc: r.external_desc,
+    quote_uri: r.quote_uri,
+    hashtags: r.hashtags,
+    mention_dids: r.mention_dids,
+    domains: r.domains,
+    self_labels: r.self_labels,
+    like_count: r.like_count ?? 0,
+    repost_count: r.repost_count ?? 0,
+    reply_count: r.reply_count ?? 0,
+    quote_count: r.quote_count ?? 0,
+    author_handle: r.author_handle,
+    author_display_name: r.author_display_name,
+    author_avatar_cid: r.author_avatar_cid,
+    like_nsfw: false,
+    image_urls: [],
+  };
 }
 
 interface ResolvedAuthor {
@@ -351,107 +421,33 @@ async function fetchAndCacheAuthorProfiles(
   return out;
 }
 
-async function hydrateFromPostgres(
-  uris: string[],
-  scoreByUri: Map<string, number>
-): Promise<VectorHit[]> {
-  if (uris.length === 0) return [];
-  const res = await bskyQuery<PgRow>(
-    `SELECT
-       p.uri, p.did, p.text, p.created_at, p.langs,
-       p.has_images, p.has_video, p.has_quote, p.has_external_link,
-       (p.reply_parent_uri IS NOT NULL) AS is_reply,
-       p.reply_parent_uri, p.reply_root_uri,
-       p.image_count, p.image_alts,
-       p.external_uri, p.external_title, p.external_desc, p.quote_uri,
-       p.hashtags, p.mention_dids, p.domains, p.self_labels,
-       pe.like_count, pe.repost_count, pe.reply_count, pe.quote_count,
-       a.handle       AS author_handle,
-       a.display_name AS author_display_name,
-       a.avatar_cid   AS author_avatar_cid
-     FROM bsky.posts p
-     LEFT JOIN bsky.post_engagement pe ON pe.uri = p.uri
-     LEFT JOIN bsky.authors a          ON a.did = p.did
-     WHERE p.uri = ANY($1::text[])`,
-    [uris]
-  );
-
-  const byUri = new Map<string, PgRow>();
-  for (const row of res.rows) byUri.set(row.uri, row);
-
-  const hits: VectorHit[] = [];
-  // Preserve the input ordering (which carries the union-merge order from
-  // multi-query); the reranker (when enabled) will re-order anyway.
-  for (const uri of uris) {
-    const r = byUri.get(uri);
-    if (!r) continue;
-    hits.push({
-      uri: r.uri,
-      did: r.did,
-      text: r.text,
-      created_at: r.created_at.toISOString(),
-      vector_score: scoreByUri.get(uri) ?? 0,
-      langs: r.langs,
-      has_images: r.has_images,
-      has_video: r.has_video,
-      has_quote: r.has_quote,
-      has_external_link: r.has_external_link,
-      is_reply: r.is_reply,
-      reply_parent_uri: r.reply_parent_uri,
-      reply_root_uri: r.reply_root_uri,
-      image_count: r.image_count,
-      image_alts: r.image_alts,
-      external_uri: r.external_uri,
-      external_title: r.external_title,
-      external_desc: r.external_desc,
-      quote_uri: r.quote_uri,
-      hashtags: r.hashtags,
-      mention_dids: r.mention_dids,
-      domains: r.domains,
-      self_labels: r.self_labels,
-      like_count: r.like_count ?? 0,
-      repost_count: r.repost_count ?? 0,
-      reply_count: r.reply_count ?? 0,
-      quote_count: r.quote_count ?? 0,
-      author_handle: r.author_handle,
-      author_display_name: r.author_display_name,
-      author_avatar_cid: r.author_avatar_cid,
-      like_nsfw: false,
-      image_urls: [],
-    });
-  }
-
-  // Backfill authors that are missing or have incomplete data (no handle or
-  // no avatar) from the Bluesky AppView.
+// Backfill authors that are missing or have incomplete data (no handle or
+// no avatar) from the Bluesky AppView. Mutates hits in place.
+async function backfillIncompleteAuthors(hits: VectorHit[]): Promise<void> {
   const backfillDids = new Set<string>();
   for (const h of hits) {
     if (h.author_handle === null || h.author_avatar_cid === null) {
       backfillDids.add(h.did);
     }
   }
-  if (backfillDids.size > 0) {
-    try {
-      const resolved = await fetchAndCacheAuthorProfiles(
-        Array.from(backfillDids)
-      );
-      for (const h of hits) {
-        const r = resolved.get(h.did);
-        if (!r) continue;
-        if (h.author_handle === null) h.author_handle = r.handle;
-        if (h.author_display_name === null) h.author_display_name = r.displayName;
-        if (h.author_avatar_cid === null) h.author_avatar_cid = r.avatarCid;
-      }
-      if (resolved.size > 0) {
-        console.log(
-          `[vector-search] author backfill: resolved ${resolved.size}/${backfillDids.size} incomplete authors`
-        );
-      }
-    } catch (e) {
-      console.warn("[vector-search] author backfill failed (non-fatal):", e);
+  if (backfillDids.size === 0) return;
+  try {
+    const resolved = await fetchAndCacheAuthorProfiles(Array.from(backfillDids));
+    for (const h of hits) {
+      const r = resolved.get(h.did);
+      if (!r) continue;
+      if (h.author_handle === null) h.author_handle = r.handle;
+      if (h.author_display_name === null) h.author_display_name = r.displayName;
+      if (h.author_avatar_cid === null) h.author_avatar_cid = r.avatarCid;
     }
+    if (resolved.size > 0) {
+      console.log(
+        `[vector-search] author backfill: resolved ${resolved.size}/${backfillDids.size} incomplete authors`
+      );
+    }
+  } catch (e) {
+    console.warn("[vector-search] author backfill failed (non-fatal):", e);
   }
-
-  return hits;
 }
 
 interface AppViewMeta {
@@ -606,60 +602,6 @@ function descriptionLooksNsfw(description: string | null | undefined): boolean {
   return false;
 }
 
-/**
- * Embed one subquery and call Vertex findNeighbors. Returns the neighbor list
- * with raw similarity scores (dot product in [-1, 1] for L2-normalized vectors).
- */
-async function embedAndFindNeighbors(
-  query: string,
-  k: number,
-  filter?: SearchFilter
-): Promise<Array<{ uri: string; rawScore: number }>> {
-  const queryVec = await embedQuery(query);
-  const indexEndpoint = `projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/indexEndpoints/${VERTEX_INDEX_ENDPOINT_ID}`;
-  const restricts = buildQueryRestricts(filter);
-  const numericRestricts = buildNumericQueryRestricts(filter);
-
-  const findRes = await matchClient().findNeighbors({
-    indexEndpoint,
-    deployedIndexId: VERTEX_DEPLOYED_INDEX_ID,
-    returnFullDatapoint: true,
-    queries: [
-      {
-        datapoint: {
-          featureVector: queryVec,
-          restricts,
-          numericRestricts,
-        },
-        neighborCount: k,
-      },
-    ],
-  });
-  const resp = Array.isArray(findRes) ? findRes[0] : findRes;
-  const neighbors = resp.nearestNeighbors?.[0]?.neighbors ?? [];
-
-  const out: Array<{ uri: string; rawScore: number }> = [];
-  for (const n of neighbors) {
-    const dp = n.datapoint;
-    const restrictsList = (dp?.restricts ?? []) as RawRestrict[];
-    const uri = restrictsList.find((r) => r.namespace === "uri")?.allowList?.[0];
-    if (!uri) continue;
-    const rawScore = typeof n.distance === "number" ? n.distance : 0;
-    out.push({ uri, rawScore });
-  }
-  return out;
-}
-
-// Cosine similarity (returned by Vertex for L2-normalized Gemini vectors on a
-// DOT_PRODUCT_DISTANCE index) lives in [-1, 1]. Rescale to [0, 1] so the UI
-// can read "higher = better" without doing the math itself.
-function rescaleSimilarity(raw: number): number {
-  const x = (raw + 1) / 2;
-  if (x < 0) return 0;
-  if (x > 1) return 1;
-  return x;
-}
-
 export interface SearchOpts {
   subqueries: string[];
   totalBudget: number;
@@ -673,10 +615,10 @@ export interface SearchOpts {
 /**
  * Multi-subquery vector search.
  *
- * For each subquery, runs a parallel embed + Vertex ANN call with
+ * For each subquery, runs a parallel embed + SQL KNN with
  * `k = floor(totalBudget / subqueries.length)`. Unions the results by URI
- * (keeping max raw similarity), hydrates the union from Postgres, applies
- * the NSFW label gate. The reranker is not invoked here.
+ * (keeping max vector_score), applies the NSFW label gate. The reranker is
+ * not invoked here.
  */
 export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
   const subqueries = opts.subqueries.map((s) => s.trim()).filter(Boolean);
@@ -685,29 +627,30 @@ export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
   const perQueryK = Math.max(1, Math.floor(totalBudget / subqueries.length));
   const t0 = performance.now();
 
-  // Parallel embed + findNeighbors per subquery.
+  // Parallel embed + KNN per subquery. Rows come back fully hydrated.
   const perQueryResults = await Promise.all(
-    subqueries.map((q) => embedAndFindNeighbors(q, perQueryK, opts.filter))
+    subqueries.map((q) => embedAndKnn(q, perQueryK, opts.filter))
   );
-  const tFind = performance.now();
+  const tKnn = performance.now();
 
-  // Union + dedup by URI, keeping the max raw similarity across subqueries.
+  // Union + dedup by URI, keeping the max vector_score across subqueries.
   // Insertion order on the Map preserves the first occurrence's position,
   // which gives a stable downstream ordering even before any reranker runs.
-  const rawByUri = new Map<string, number>();
+  const byUri = new Map<string, PgRow>();
   for (const list of perQueryResults) {
-    for (const { uri, rawScore } of list) {
-      const prev = rawByUri.get(uri);
-      if (prev === undefined || rawScore > prev) rawByUri.set(uri, rawScore);
+    for (const row of list) {
+      const prev = byUri.get(row.uri);
+      if (prev === undefined || row.vector_score > prev.vector_score) {
+        byUri.set(row.uri, row);
+      }
     }
   }
-  const uris = Array.from(rawByUri.keys());
-  const scoreByUri = new Map<string, number>();
-  for (const [uri, raw] of rawByUri) scoreByUri.set(uri, rescaleSimilarity(raw));
+  const hits = Array.from(byUri.values()).map(rowToHit);
+  const uris = hits.map((h) => h.uri);
 
-  // Hydrate from Postgres AND fetch AppView meta (labels + image URLs) AND
-  // fetch author profiles (descriptions for the NSFW heuristic) in parallel.
-  // Each AppView call is gated on whether the caller actually needs it.
+  // AppView meta (labels + image URLs) + author profiles (descriptions for
+  // the NSFW heuristic) + incomplete-author backfill in parallel. Each
+  // AppView call is gated on whether the caller actually needs it.
   const blockLabels = opts.filter?.selfLabelsDeny ?? [];
   const blockSet = new Set(blockLabels);
   const wantLabels = blockLabels.length > 0;
@@ -715,18 +658,16 @@ export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
   const wantAppView = wantLabels || wantImages;
   const wantProfiles = opts.filter?.excludeLikelyNsfw === true;
 
-  // Extract author DIDs from URIs without waiting for hydration: the AT URI
-  // already carries `did:plc:xxx` between `at://` and the next `/`.
-  const authorDids = wantProfiles ? uniqueAuthorDidsFromUris(uris) : [];
+  const authorDids = wantProfiles ? uniqueAuthorDids(hits) : [];
 
-  const [hits, appViewMeta, authorDescriptions] = await Promise.all([
-    hydrateFromPostgres(uris, scoreByUri),
+  const [appViewMeta, authorDescriptions] = await Promise.all([
     wantAppView
       ? fetchAppViewMeta(uris)
       : Promise.resolve(null as Map<string, AppViewMeta> | null),
     wantProfiles
       ? fetchAuthorDescriptions(authorDids)
       : Promise.resolve(null as Map<string, string> | null),
+    backfillIncompleteAuthors(hits),
   ]);
   const tParallel = performance.now();
 
@@ -770,8 +711,8 @@ export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
 
   console.log(
     `[timing] searchPosts subqueries=${subqueries.length} perK=${perQueryK} ` +
-      `find=${(tFind - t0).toFixed(0)}ms ` +
-      `hydrate+appview=${(tParallel - tFind).toFixed(0)}ms ` +
+      `knn=${(tKnn - t0).toFixed(0)}ms ` +
+      `appview=${(tParallel - tKnn).toFixed(0)}ms ` +
       `total=${(tParallel - t0).toFixed(0)}ms ` +
       `union=${uris.length} hits=${hits.length}` +
       (wantLabels ? ` labeler-filtered=${labelerRemoved}` : "") +
@@ -781,12 +722,9 @@ export async function searchPosts(opts: SearchOpts): Promise<VectorHit[]> {
   return filteredHits;
 }
 
-function uniqueAuthorDidsFromUris(uris: string[]): string[] {
+function uniqueAuthorDids(hits: VectorHit[]): string[] {
   const seen = new Set<string>();
-  for (const uri of uris) {
-    const m = uri.match(/^at:\/\/([^/]+)\//);
-    if (m) seen.add(m[1]);
-  }
+  for (const h of hits) seen.add(h.did);
   return Array.from(seen);
 }
 

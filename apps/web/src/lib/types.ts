@@ -15,7 +15,7 @@ export interface MechanicalFilters {
   hashtag_include: string[];      // post must contain at least one (case-insensitive)
   block_labels: string[];         // Bluesky self-labels to reject (NSFW gate)
   exclude_likely_nsfw: boolean;   // drop posts from authors whose description matches LIKE_NSFW_DESCRIPTION_KEYWORDS
-  min_like_count: number;         // Vertex numeric_restrict on like_count
+  min_like_count: number;         // SQL filter on post_engagement.like_count
   min_repost_count: number;
   min_reply_count: number;
   time_window: TimeWindow;
@@ -23,4 +23,9 @@ export interface MechanicalFilters {
   created_before_iso: string;
 }
 
-export type TimeWindow = "1h" | "24h" | "7d" | "30d" | "all" | "custom";
+// Capped at the partial HNSW index coverage (currently ~3 days — see
+// DECISIONS.md #12). A window longer than the indexed range would silently
+// return only what's indexed. Raise this back toward 7d/14d once the index
+// is rebuilt over a wider range. "custom" is not clamped — older bounds just
+// match nothing beyond the indexed range.
+export type TimeWindow = "1h" | "24h" | "3d" | "custom";

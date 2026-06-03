@@ -9,7 +9,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@google-cloud/aiplatform": "^6.7.0",
     "@google-cloud/cloud-sql-connector": "^1.4.0",
     "@google-cloud/opentelemetry-cloud-monitoring-exporter": "^0.21.0",
     "@google-cloud/secret-manager": "^6.1.0",

@@ -54,6 +54,8 @@ The split: write-heavy bsky firehose got its own dedicated-CPU instance so it ca
 
 # Vector search
 
+**Backfilling / rebuilding the index: reuse the embeddings we already have — do NOT re-embed.** Every post's vector is cached in `bsky.posts.embedding_vec` (packed float32, 768d) and archived as parquet in `gs://happy-feed-data-timelines/`. Any backfill, reindex, or migration (e.g. populating a pgvector column) must reinterpret those cached bytes, not call Gemini again — re-embedding is a needless cost and the data is already there. See `apps/web/scripts/backfill-halfvec.ts`.
+
 Both services talk to the **same** Vertex Vector Search index in `timelines-492720` / `us-central1`:
 
 - **Read side** (`apps/web/src/lib/vector-search.ts`): embeds the user query with Gemini (`gemini-embedding-001`, 768d, `RETRIEVAL_QUERY`), then `MatchServiceClient.findNeighbors`. The datapoint carries only the `uri` restrict + filter restricts + numeric_restricts — **no text**. After Vertex returns URIs, the read side hydrates from `bsky.posts LEFT JOIN bsky.authors LEFT JOIN bsky.post_engagement` via `apps/web/src/lib/bsky-pg.ts`.

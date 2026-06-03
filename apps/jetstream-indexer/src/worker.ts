@@ -2,7 +2,7 @@
 //   - postConsumer       (app.bsky.feed.post creates + deletes)
 //   - engagementConsumer (app.bsky.feed.like + app.bsky.feed.repost creates)
 //   - profileConsumer    (app.bsky.actor.profile + identity events)
-//   - vertexReconciler   (periodic engagement-count flush to Vertex)
+//   - prune              (daily retention sweep on bsky.posts)
 //
 // Cloud Run: --no-cpu-throttling --min=1 --max=1 --concurrency=1, CPU=2, memory=2Gi.
 
@@ -11,12 +11,11 @@ import { config } from './config.js'
 import { startEngagementConsumer } from './consumers/engagement-consumer.js'
 import { startPostConsumer } from './consumers/post-consumer.js'
 import { startProfileConsumer } from './consumers/profile-consumer.js'
-import { startVertexReconciler } from './consumers/vertex-reconciler.js'
+import { startPrune } from './consumers/prune.js'
 import { readCursor } from './lib/cursor-store.js'
 import { runMigrations } from './lib/migrator.js'
 import { shutdownMetrics } from './lib/otel-metrics.js'
 import { closePool } from './lib/pg.js'
-import { VertexStore } from './lib/vertex-store.js'
 
 const cfg = config
 const WORKER_ID = process.env.WORKER_ID ?? `w${process.pid}`
@@ -52,9 +51,6 @@ const main = async () => {
 
   await runMigrations()
 
-  const store = new VertexStore(cfg)
-  await store.ensureCollection()
-
   const [postCursor, engCursor, profCursor] = await Promise.all([
     cursorOrNow('post'),
     cursorOrNow('engagement'),
@@ -64,10 +60,10 @@ const main = async () => {
   // Run all four loops concurrently. None of them ever resolve under normal
   // operation; if any rejects we crash the process so Cloud Run restarts us.
   await Promise.all([
-    startPostConsumer(cfg, store, WORKER_ID, postCursor),
+    startPostConsumer(cfg, WORKER_ID, postCursor),
     startEngagementConsumer(cfg, WORKER_ID, engCursor),
     startProfileConsumer(cfg, WORKER_ID, profCursor),
-    startVertexReconciler(cfg, store, WORKER_ID),
+    startPrune(cfg),
   ])
 }
 

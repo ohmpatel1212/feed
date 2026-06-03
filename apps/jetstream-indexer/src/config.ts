@@ -13,11 +13,6 @@ export const config = {
   batchMax: parseInt(process.env.BATCH_MAX ?? '200', 10),
   flushMs: parseInt(process.env.FLUSH_MS ?? '5000', 10),
 
-  vertexIndexId: process.env.VERTEX_INDEX_ID ?? '',
-  vertexIndexEndpointId: process.env.VERTEX_INDEX_ENDPOINT_ID ?? '',
-  vertexIndexEndpointHost: process.env.VERTEX_INDEX_ENDPOINT_HOST ?? '',
-  vertexDeployedIndexId: process.env.VERTEX_DEPLOYED_INDEX_ID ?? 'happy_feed_deployed',
-
   bskyCloudSqlInstance:
     process.env.BSKY_CLOUDSQL_CONNECTION_NAME ?? 'timelines-492720:us-central1:bsky-db',
 
@@ -28,8 +23,11 @@ export const config = {
   engagementBatchMax: parseInt(process.env.ENGAGEMENT_BATCH_MAX ?? '2000', 10),
   profileFlushMs: parseInt(process.env.PROFILE_FLUSH_MS ?? '10000', 10),
   profileBatchMax: parseInt(process.env.PROFILE_BATCH_MAX ?? '50', 10),
-  reconcilerIntervalMs: parseInt(process.env.RECONCILER_INTERVAL_MS ?? '60000', 10),
-  reconcilerBatchMax: parseInt(process.env.RECONCILER_BATCH_MAX ?? '500', 10),
+
+  // Retention prune (caps the pgvector HNSW index). Supported feed windows
+  // are capped at retentionDays — keep them in sync (web app TimeWindow).
+  retentionDays: parseInt(process.env.RETENTION_DAYS ?? '14', 10),
+  pruneIntervalMs: parseInt(process.env.PRUNE_INTERVAL_MS ?? String(24 * 60 * 60 * 1000), 10),
 } as const
 
 export type Config = typeof config

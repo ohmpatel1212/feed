@@ -1,12 +1,12 @@
 // postConsumer: app.bsky.feed.post (creates + deletes).
-// Creates: extract -> embed -> upsert Vertex + bsky.posts + bsky.post_engagement.
-// Deletes: drop from bsky.posts + Vertex, decrement parent counters.
+// Creates: extract -> embed -> upsert bsky.posts (full record + halfvec
+// embedding + cached float32 bytea) + bsky.post_engagement.
+// Deletes: drop from bsky.posts, decrement parent counters.
 
 import type { Config } from '../config.js'
 import { composeEmbedInput } from '../lib/compose-embed-input.js'
 import { writeCursor } from '../lib/cursor-store.js'
 import { embedTexts } from '../lib/embed.js'
-import { uriToPointId } from '../lib/hash.js'
 import {
   extractPost,
   type JetstreamCommitEvent,
@@ -26,15 +26,12 @@ import {
 } from '../lib/otel-metrics.js'
 import { bumpReplyAndQuoteCounters, deletePostsBatch, upsertPosts } from '../lib/repo/post-repo.js'
 import { writePosts } from '../lib/storage.js'
-import type { VertexStore } from '../lib/vertex-store.js'
-import type { Point } from '../lib/vertex-store.js'
 import { makeQueueHarness, runJetstreamLoop, sleep } from './shared.js'
 
 const CONSUMER_KEY = 'post'
 const EMBED_USD_PER_1K_TOKENS = 0.00015
 const CHARS_PER_TOKEN = 4
 const EMBED_BATCH = 100
-const UPSERT_BATCH = 500
 
 type Queued = { post: PostRecord; cursorUs: number }
 
@@ -47,30 +44,11 @@ const packFloat32 = (vec: number[]): Buffer => {
   return Buffer.from(a.buffer, a.byteOffset, a.byteLength)
 }
 
-const toPoint = async (p: PostRecord, vector: number[]): Promise<Point> => ({
-  id: await uriToPointId(p.uri),
-  vector,
-  uri: p.uri,
-  did: p.did,
-  langs: p.langs,
-  has_images: p.has_images,
-  has_video: p.has_video,
-  has_quote: p.has_quote,
-  has_external_link: p.has_external_link,
-  is_reply: p.is_reply,
-  self_labels: p.self_labels,
-  hashtags: p.hashtags,
-  mention_dids: p.mention_dids,
-  domains: p.domains,
-  created_at_us: p.created_at_us,
-  image_count: p.image_count,
-  like_count: 0,
-  repost_count: 0,
-  reply_count: 0,
-  quote_count: 0,
-})
+// pgvector text input format; float32→float16 happens server-side on
+// assignment to the halfvec(768) column.
+const toHalfvecLiteral = (vec: number[]): string => '[' + vec.join(',') + ']'
 
-export const startPostConsumer = async (cfg: Config, store: VertexStore, workerId: string, initialCursorUs: number): Promise<void> => {
+export const startPostConsumer = async (cfg: Config, workerId: string, initialCursorUs: number): Promise<void> => {
   let latestCursorUs = initialCursorUs
 
   const harness = makeQueueHarness<Queued>({
@@ -114,17 +92,16 @@ export const startPostConsumer = async (cfg: Config, store: VertexStore, workerI
         }
       }
 
-      // Build Vertex points + DB upsert rows.
-      const points: Point[] = []
-      for (let i = 0; i < posts.length; i++) {
-        points.push(await toPoint(posts[i]!, vectors[i]!))
-      }
-      const pgRows = posts.map((p, i) => ({ ...p, embedding_vec: packFloat32(vectors[i]!) }))
+      // Build DB upsert rows. embedding_vec (float32 bytea) is kept alongside
+      // the halfvec column until pgvector is validated in prod, so the
+      // backfill can be re-run (see PGVECTOR_MIGRATION_PLAN.md Rollback).
+      const pgRows = posts.map((p, i) => ({
+        ...p,
+        embedding_vec: packFloat32(vectors[i]!),
+        embedding: toHalfvecLiteral(vectors[i]!),
+      }))
 
-      // Persist: Vertex, Postgres, parquet, reply/quote counters.
-      for (let i = 0; i < points.length; i += UPSERT_BATCH) {
-        await store.upsert(points.slice(i, i + UPSERT_BATCH))
-      }
+      // Persist: Postgres, parquet, reply/quote counters.
       await upsertPosts(pgRows)
       await bumpReplyAndQuoteCounters(posts)
       await writePosts(cfg, posts, workerId)
@@ -177,8 +154,6 @@ export const startPostConsumer = async (cfg: Config, store: VertexStore, workerI
     flush: async (uris) => {
       const t0 = Date.now()
       await deletePostsBatch(uris)
-      const ids = await Promise.all(uris.map((u) => uriToPointId(u)))
-      await store.remove(ids)
       log('delete_flush', { n: uris.length, ms: Date.now() - t0 })
     },
   })
