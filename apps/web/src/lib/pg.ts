@@ -371,8 +371,7 @@ function mechanicalToSearchFilter(m?: MechanicalFilters): SearchFilter | undefin
 const PRESET_WINDOW_MS: Record<string, number> = {
   "1h": 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
-  "7d": 7 * 24 * 60 * 60 * 1000,
-  "30d": 30 * 24 * 60 * 60 * 1000,
+  "3d": 3 * 24 * 60 * 60 * 1000,
 };
 
 function timeWindowToBounds(m: MechanicalFilters): {
@@ -380,7 +379,7 @@ function timeWindowToBounds(m: MechanicalFilters): {
   beforeUs?: number;
 } {
   const window = m.time_window;
-  if (!window || window === "all") return {};
+  if (!window) return {};
   if (window === "custom") {
     const out: { afterUs?: number; beforeUs?: number } = {};
     if (m.created_after_iso) {

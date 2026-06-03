@@ -5,7 +5,12 @@
 import { withClient } from '../pg.js'
 import type { PostRecord } from '../jetstream-extract.js'
 
-type PostUpsertRow = PostRecord & { embedding_vec: Buffer | null }
+type PostUpsertRow = PostRecord & {
+  embedding_vec: Buffer | null
+  // pgvector halfvec(768) text literal "[f1,f2,...]" — the float32→float16
+  // conversion happens server-side on assignment to the column.
+  embedding: string | null
+}
 
 const escapeArrayLiteral = (xs: string[]): string =>
   '{' +
@@ -34,7 +39,7 @@ export const upsertPosts = async (rows: PostUpsertRow[]): Promise<void> => {
     'external_uri', 'external_title', 'external_desc', 'quote_uri', 'quote_did',
     'has_images', 'has_video', 'has_quote', 'has_external_link',
     'hashtags', 'mention_dids', 'links', 'domains', 'self_labels', 'raw_facets',
-    'embedding_vec',
+    'embedding_vec', 'embedding',
   ]
   const N = cols.length
   const values: unknown[] = []
@@ -56,6 +61,7 @@ export const upsertPosts = async (rows: PostUpsertRow[]): Promise<void> => {
       escapeArrayLiteral(p.self_labels),
       p.raw_facets ? JSON.stringify(p.raw_facets) : null,
       p.embedding_vec,
+      p.embedding,
     )
   })
   const sql = `
@@ -89,6 +95,7 @@ export const upsertPosts = async (rows: PostUpsertRow[]): Promise<void> => {
       self_labels      = EXCLUDED.self_labels,
       raw_facets       = EXCLUDED.raw_facets,
       embedding_vec    = EXCLUDED.embedding_vec,
+      embedding        = EXCLUDED.embedding,
       indexed_at       = now()
   `
   await withClient((c) => c.query(sql, values))
