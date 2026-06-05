@@ -123,6 +123,10 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
   const [feeds, setFeeds] = useState<SavedFeed[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [showBskyConnect, setShowBskyConnect] = useState(false);
+  const [bskyHandle, setBskyHandle] = useState("");
+  const [bskyConnecting, setBskyConnecting] = useState(false);
   const [activePostCount, setActivePostCount] = useState(0);
   const [mobileTab, setMobileTab] = useState<MobileTab>("chat");
   const [optionsUnread, setOptionsUnread] = useState(false);
@@ -395,7 +399,7 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
             style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
           >
             <Link href="/">← Home</Link>
-            <Dialog>
+            <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
               <DialogTrigger className="cur-profile-btn" title="Profile">
                 {profile.photoURL ? (
                   /* eslint-disable-next-line @next/next/no-img-element */
@@ -449,15 +453,8 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
                       <button
                         className="cur-bsky-connect-btn"
                         onClick={() => {
-                          const handle = prompt("Enter your Bluesky handle (e.g. yourname.bsky.social)");
-                          if (!handle) return;
-                          authedFetch("/api/bsky/oauth/authorize", {
-                            method: "POST",
-                            body: JSON.stringify({ handle: handle.trim().replace(/^@/, "") }),
-                          })
-                            .then((r) => r.json())
-                            .then((data) => { if (data.url) window.location.href = data.url; })
-                            .catch(() => {});
+                          setProfileOpen(false);
+                          setShowBskyConnect(true);
                         }}
                       >
                         Connect Bluesky
@@ -549,6 +546,105 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* BLUESKY CONNECT MODAL */}
+        <Dialog open={showBskyConnect} onOpenChange={(open) => { if (!open) { setShowBskyConnect(false); setBskyHandle(""); } }}>
+          <DialogContent className="profile-dialog">
+            <DialogHeader>
+              <DialogTitle style={{ fontFamily: "var(--rf-display)", fontSize: 22, fontWeight: 400 }}>
+                Connect Bluesky
+              </DialogTitle>
+            </DialogHeader>
+            <Separator />
+            <div className="profile-section">
+              <label className="profile-label" htmlFor="bsky-handle-input">
+                Your Bluesky handle
+              </label>
+              <input
+                id="bsky-handle-input"
+                type="text"
+                placeholder="yourname.bsky.social"
+                value={bskyHandle}
+                onChange={(e) => setBskyHandle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && bskyHandle.trim()) {
+                    e.preventDefault();
+                    setBskyConnecting(true);
+                    authedFetch("/api/bsky/oauth/authorize", {
+                      method: "POST",
+                      body: JSON.stringify({ handle: bskyHandle.trim().replace(/^@/, "") }),
+                    })
+                      .then((r) => r.json())
+                      .then((data) => { if (data.url) window.location.href = data.url; })
+                      .catch(() => setBskyConnecting(false));
+                  }
+                }}
+                autoFocus
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  background: "var(--void-soft)",
+                  border: "1px solid var(--hair-strong)",
+                  borderRadius: 8,
+                  color: "var(--cream)",
+                  fontFamily: "var(--rf-body)",
+                  fontSize: 14,
+                  outline: "none",
+                }}
+              />
+              <p style={{ color: "var(--sage)", fontFamily: "var(--rf-body)", fontSize: 12, marginTop: 6 }}>
+                You&apos;ll be redirected to Bluesky to authorize access.
+              </p>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button
+                onClick={() => { setShowBskyConnect(false); setBskyHandle(""); }}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--hair-strong)",
+                  color: "var(--parchment)",
+                  fontFamily: "var(--rf-mono)",
+                  fontSize: 10,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 999,
+                  padding: "8px 16px",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!bskyHandle.trim() || bskyConnecting}
+                onClick={() => {
+                  setBskyConnecting(true);
+                  authedFetch("/api/bsky/oauth/authorize", {
+                    method: "POST",
+                    body: JSON.stringify({ handle: bskyHandle.trim().replace(/^@/, "") }),
+                  })
+                    .then((r) => r.json())
+                    .then((data) => { if (data.url) window.location.href = data.url; })
+                    .catch(() => setBskyConnecting(false));
+                }}
+                style={{
+                  background: bskyHandle.trim() && !bskyConnecting ? "var(--aurora)" : "var(--hair-strong)",
+                  color: "var(--void)",
+                  fontFamily: "var(--rf-mono)",
+                  fontSize: 10,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                  borderRadius: 999,
+                  padding: "8px 16px",
+                  border: "none",
+                  cursor: bskyHandle.trim() && !bskyConnecting ? "pointer" : "not-allowed",
+                  opacity: bskyHandle.trim() && !bskyConnecting ? 1 : 0.5,
+                }}
+              >
+                {bskyConnecting ? "Connecting…" : "Connect"}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* MAIN — topbar + page workbench + mobile tabs all live in cur-main
             so the data-mobile-tab CSS selectors can scope which pane shows. */}
