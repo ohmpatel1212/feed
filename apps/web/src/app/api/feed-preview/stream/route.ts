@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   getFeedForUser,
   getFeedPreviewPosts,
@@ -20,8 +20,7 @@ import {
  * line and the stream is closed.
  */
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const feedId = Number(req.nextUrl.searchParams.get("feedId"));
   if (!feedId) {

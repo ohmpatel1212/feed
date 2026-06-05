@@ -3,7 +3,6 @@ import "./globals.css";
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 import ServerErrorToast from "@/components/ServerErrorToast";
-import AuthGate from "@/components/AuthGate";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
@@ -29,7 +28,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <ServerErrorToast />
-        <AuthGate>{children}</AuthGate>
+        {children}
       </body>
     </html>
   );

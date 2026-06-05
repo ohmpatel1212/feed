@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   getFeedForUser,
-  getUserByFirebaseUid,
+  getUserById,
   recordFeedback,
   type FeedbackCategory,
 } from "@/lib/pg";
@@ -26,8 +26,7 @@ const DEFAULT_RECIPIENTS = [
 const DEFAULT_FROM = "Ripple Feed <feedback@hooglee.com>";
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== "object") {
@@ -86,7 +85,7 @@ export async function POST(req: NextRequest) {
   // failure (unverified domain, network blip, missing API key) must not
   // fail the request.
   void sendFeedbackEmail({
-    firebaseUid: auth.firebaseUid,
+    userId: auth.userId,
     feedId,
     category: category as FeedbackCategory,
     rating,
@@ -104,7 +103,7 @@ export async function POST(req: NextRequest) {
 }
 
 async function sendFeedbackEmail(params: {
-  firebaseUid: string;
+  userId: string;
   feedId: number | null;
   category: FeedbackCategory;
   rating: number;
@@ -129,13 +128,13 @@ async function sendFeedbackEmail(params: {
   const from = process.env.FEEDBACK_EMAIL_FROM || DEFAULT_FROM;
 
   // Look up the user + feed for nicer subject/body.
-  const user = await getUserByFirebaseUid(params.firebaseUid);
+  const user = await getUserById(params.userId);
   const feed =
     params.feedId && user
       ? await getFeedForUser(params.feedId, user.id)
       : null;
 
-  const who = user?.email || user?.name || params.firebaseUid;
+  const who = user?.email || user?.name || params.userId;
   const categoryLabel = CATEGORY_LABEL[params.category];
   const subject = `[Ripple Feedback] ${categoryLabel} · ${params.rating}/10 from ${who}`;
 

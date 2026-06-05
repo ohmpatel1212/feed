@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   createFeed,
   listFeedsForUser,
@@ -15,8 +15,7 @@ import {
 
 export async function GET(req: NextRequest) {
   const t0 = performance.now();
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const tAuth = performance.now();
 
   const feeds = await listFeedsForUser(auth.userId);
@@ -30,8 +29,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const { name } = await req.json().catch(() => ({ name: undefined }));
   const feed = await createFeed(auth.userId, name || "Untitled");
@@ -39,8 +37,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const body = await req.json();
   const {
@@ -110,8 +107,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const { id } = await req.json();
   if (!id)

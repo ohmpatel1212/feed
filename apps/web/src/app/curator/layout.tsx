@@ -6,6 +6,8 @@ import { useParams, useRouter } from "next/navigation";
 import "./curator.css";
 import "./onboarding.css";
 import "./onboarding-flow.css";
+import "./tour.css";
+import CuratorTour from "./CuratorTour";
 import {
   Dialog,
   DialogContent,
@@ -24,9 +26,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import Onboarding, { useAuth, type UserProfile, type OnboardingResult } from "@/components/Onboarding";
-import ImportMemoryModal from "@/components/ImportMemoryModal";
+import type { UserProfile } from "@/lib/types";
 import FeedbackModal from "@/components/FeedbackModal";
+import FeedSearch from "@/components/FeedSearch";
 import ShaderLogo from "@/components/ShaderLogo";
 import { authedFetch } from "@/lib/authed-fetch";
 import { useResizable } from "./useResizable";
@@ -55,32 +57,58 @@ const FEED_COLORS = [
   "var(--mist)",
 ];
 
+const ANON_PROFILE: UserProfile = {
+  uid: "",
+  name: "Anonymous",
+  email: "",
+  photoURL: "",
+  blueskyHandle: "",
+  blueskyDid: "",
+  bskyAppPassword: "",
+  onboardedAt: new Date().toISOString(),
+};
+
 export default function CuratorLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const { profile, setProfile, isOnboarded, loading: authLoading } = useAuth();
+  const [profile, setProfile] = useState<UserProfile>(ANON_PROFILE);
 
-  if (authLoading) {
-    return (
-      <div className="curator-shell" style={{ alignItems: "center", justifyContent: "center" }}>
-        <div className="cur-dots"><span /><span /><span /></div>
-      </div>
-    );
-  }
+  const fetchProfile = useCallback(async () => {
+    try {
+      const res = await authedFetch("/api/user");
+      if (res.ok) {
+        const data = await res.json();
+        const row = data.user;
+        if (row) {
+          setProfile({
+            uid: row.id || "",
+            name: row.name || "Anonymous",
+            email: row.email || "",
+            photoURL: row.photo_url || "",
+            blueskyHandle: row.bluesky_handle || "",
+            blueskyDid: row.bluesky_did || "",
+            bskyAppPassword: row.bsky_app_password ? "••••" : "",
+            onboardedAt: row.created_at || new Date().toISOString(),
+          });
+        }
+      }
+    } catch { /* use anonymous profile */ }
+  }, []);
 
-  if (!isOnboarded) {
-    return (
-      <Onboarding
-        onComplete={(result: OnboardingResult) => {
-          setProfile(result);
-          if (result.feedId) {
-            router.push(`/curator/${result.feedId}`);
-          }
-        }}
-      />
-    );
-  }
+  // Fetch user info on mount. If we just returned from Bluesky OAuth,
+  // clean up the URL param — the fetch will pick up the linked DID.
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("bsky_connected") === "1" || params.get("bsky_error")) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("bsky_connected");
+        url.searchParams.delete("bsky_error");
+        window.history.replaceState({}, "", url.pathname + url.search);
+      }
+    }
+    fetchProfile();
+  }, [fetchProfile]);
 
-  return <CuratorShell profile={profile!}>{children}</CuratorShell>;
+  return <CuratorShell profile={profile}>{children}</CuratorShell>;
 }
 
 function CuratorShell({ profile, children }: { profile: UserProfile; children: React.ReactNode }) {
@@ -94,7 +122,6 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
   );
   const [feeds, setFeeds] = useState<SavedFeed[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [showImportMemory, setShowImportMemory] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [activePostCount, setActivePostCount] = useState(0);
   const [mobileTab, setMobileTab] = useState<MobileTab>("chat");
@@ -236,12 +263,6 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
     }
   }
 
-  function handleMemoryImported(importedFeed: { id: number }) {
-    setShowImportMemory(false);
-    reloadFeeds();
-    router.push(`/curator/${importedFeed.id}`);
-  }
-
   const activeFeed = feeds.find((f) => f.id === activeFeedId);
   const activeHasCriteria = activeFeed ? feedIsComplete(activeFeed) : false;
 
@@ -344,6 +365,27 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
             )}
           </div>
 
+          <div className="cur-verify-box">
+            <div className="cur-verify-head">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+              <span>Verify your identity</span>
+            </div>
+            <p className="cur-verify-desc">
+              First 150 verified users get free early access — claim your spot.
+            </p>
+            <div className="cur-verify-bar-track">
+              <div className="cur-verify-bar-fill" style={{ width: "13%" }} />
+            </div>
+            <div className="cur-verify-bar-label">
+              <span>20 / 150 spots claimed</span>
+            </div>
+            <button className="cur-verify-btn" onClick={() => { /* TODO: wire up verification flow */ }}>
+              Claim your spot
+            </button>
+          </div>
+
           <button className="cur-new-feed" onClick={startNewFeed}>
             + New feed
           </button>
@@ -398,13 +440,29 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
                     </span>
                   </div>
                   <div className="profile-row">
-                    <span className="profile-key">Connection</span>
-                    <span
-                      className="profile-val"
-                      style={{ color: profile.blueskyHandle ? "var(--aurora)" : "var(--amber)" }}
-                    >
-                      {profile.blueskyHandle ? "● Connected" : "○ Not linked"}
-                    </span>
+                    <span className="profile-key">Status</span>
+                    {profile.blueskyDid ? (
+                      <span className="profile-val" style={{ color: "var(--aurora-deep)" }}>
+                        ● Connected
+                      </span>
+                    ) : (
+                      <button
+                        className="cur-bsky-connect-btn"
+                        onClick={() => {
+                          const handle = prompt("Enter your Bluesky handle (e.g. yourname.bsky.social)");
+                          if (!handle) return;
+                          authedFetch("/api/bsky/oauth/authorize", {
+                            method: "POST",
+                            body: JSON.stringify({ handle: handle.trim().replace(/^@/, "") }),
+                          })
+                            .then((r) => r.json())
+                            .then((data) => { if (data.url) window.location.href = data.url; })
+                            .catch(() => {});
+                        }}
+                      >
+                        Connect Bluesky
+                      </button>
+                    )}
                   </div>
                   <div className="profile-row">
                     <span className="profile-key">Feed status</span>
@@ -533,15 +591,6 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
                   Introspect a handle
                 </Link>
               )}
-              <button
-                onClick={() => setShowImportMemory(true)}
-                className="cur-topbar-icon"
-                title="Import AI memory"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
-                </svg>
-              </button>
               <button
                 onClick={() => setShowFeedback(true)}
                 className="cur-topbar-icon"
@@ -679,13 +728,6 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
           </nav>
         </div>
 
-        {showImportMemory && (
-          <ImportMemoryModal
-            onClose={() => setShowImportMemory(false)}
-            onImported={handleMemoryImported}
-          />
-        )}
-
         {showFeedback && (
           <FeedbackModal
             onClose={() => setShowFeedback(false)}
@@ -693,6 +735,14 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
             feedName={activeFeed?.name ?? null}
           />
         )}
+
+        <FeedSearch
+          feeds={feeds}
+          activeFeedId={activeFeedId}
+          onNewFeed={startNewFeed}
+        />
+
+        <CuratorTour />
       </div>
     </CuratorProvider>
   );

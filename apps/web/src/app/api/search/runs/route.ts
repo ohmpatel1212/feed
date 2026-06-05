@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { listSearchRunsForUser } from "@/lib/pg";
 
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const limitParam = Number(req.nextUrl.searchParams.get("limit") || "20");
   const limit = Number.isFinite(limitParam)

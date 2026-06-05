@@ -134,8 +134,8 @@ function renderPostText(text: string): React.ReactNode[] {
 }
 
 const RIGHT_W_KEY = "curator:rightWidth";
-const RIGHT_MIN = 320;
-const RIGHT_MAX = 720;
+const RIGHT_MIN = 280;
+const RIGHT_MAX = 960;
 
 function parseMessage(content: string) {
   // Server stores the agent's question text + numbered option lines (rendered
@@ -195,6 +195,7 @@ function BlueskyEmbed({
 
 export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const {
+    profile,
     feeds,
     reloadFeeds,
     setActivePostCount,
@@ -208,7 +209,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
   const [rightWidth, startRightDrag] = useResizable(
-    RIGHT_W_KEY, 380, RIGHT_MIN, RIGHT_MAX, "right"
+    RIGHT_W_KEY, 560, RIGHT_MIN, RIGHT_MAX, "right"
   );
 
   // Per-feed: unavailable URIs from the Bluesky availability probe. Lives
@@ -253,6 +254,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const interviewModeRef = useRef(false);
   const [posts, setPosts] = useState<Post[]>([]);
   const [postCount, setPostCount] = useState(0);
+  const [aiLabels, setAiLabels] = useState<Record<string, { ai_generated: boolean; scores: number[] }>>({});
   const [lightbox, setLightbox] = useState<{ urls: string[]; index: number } | null>(null);
   useEffect(() => {
     if (!lightbox) return;
@@ -264,6 +266,107 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [lightbox]);
+
+  // Fetch AI-generated labels for posts with images
+  useEffect(() => {
+    if (posts.length === 0) return;
+    const imagePosts = posts.filter((p) => p.has_images && p.image_urls.length > 0);
+    if (imagePosts.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(
+        imagePosts.map(async (p) => {
+          try {
+            const params = new URLSearchParams({
+              uri: p.uri,
+              image_urls: p.image_urls.join(","),
+            });
+            const res = await authedFetch(`/api/ai-label?${params}`);
+            if (!res.ok) return null;
+            const data = await res.json();
+            return { uri: p.uri, ai_generated: data.ai_generated as boolean, scores: data.scores as number[] };
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (cancelled) return;
+      const next: Record<string, { ai_generated: boolean; scores: number[] }> = {};
+      for (const r of results) {
+        if (r) next[r.uri] = { ai_generated: r.ai_generated, scores: r.scores };
+      }
+      setAiLabels(next);
+    })();
+    return () => { cancelled = true; };
+  }, [posts]);
+
+  // Bluesky like state: uri → { liked, likeUri, pending }
+  const [likeState, setLikeState] = useState<Record<string, { liked: boolean; likeUri?: string; pending: boolean }>>({});
+  // User can like if they have OAuth (blueskyDid set) or app password
+  const hasBskyAuth = !!(profile.blueskyDid || (profile.blueskyHandle && profile.bskyAppPassword));
+
+  // On-demand Bluesky auth prompt
+  const [showBskyAuth, setShowBskyAuth] = useState(false);
+  const [bskyHandle, setBskyHandle] = useState("");
+  const [bskyAuthLoading, setBskyAuthLoading] = useState(false);
+  const [bskyAuthError, setBskyAuthError] = useState("");
+
+  async function startBskyAuth() {
+    if (!bskyHandle.trim()) return;
+    setBskyAuthLoading(true);
+    setBskyAuthError("");
+    try {
+      const res = await authedFetch("/api/bsky/oauth/authorize", {
+        method: "POST",
+        body: JSON.stringify({ handle: bskyHandle.trim().replace(/^@/, "") }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to start sign-in");
+      }
+      const { url } = await res.json();
+      window.location.href = url;
+    } catch (e) {
+      setBskyAuthError(e instanceof Error ? e.message : "Sign-in failed");
+      setBskyAuthLoading(false);
+    }
+  }
+
+  async function toggleLike(postUri: string, currentlyLiked: boolean, currentLikeUri?: string) {
+    if (!hasBskyAuth) {
+      setShowBskyAuth(true);
+      return;
+    }
+    const prev = likeState[postUri];
+    // Optimistic update
+    setLikeState((s) => ({
+      ...s,
+      [postUri]: { liked: !currentlyLiked, likeUri: currentlyLiked ? undefined : currentLikeUri, pending: true },
+    }));
+    try {
+      const res = await authedFetch("/api/bsky/like", {
+        method: "POST",
+        body: JSON.stringify({
+          uri: postUri,
+          action: currentlyLiked ? "unlike" : "like",
+          ...(currentlyLiked && currentLikeUri ? { likeUri: currentLikeUri } : {}),
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLikeState((s) => ({
+          ...s,
+          [postUri]: { liked: !currentlyLiked, likeUri: data.likeUri, pending: false },
+        }));
+      } else {
+        // Revert on failure
+        setLikeState((s) => ({ ...s, [postUri]: prev ?? { liked: currentlyLiked, likeUri: currentLikeUri, pending: false } }));
+      }
+    } catch {
+      setLikeState((s) => ({ ...s, [postUri]: prev ?? { liked: currentlyLiked, likeUri: currentLikeUri, pending: false } }));
+    }
+  }
+
   const [postsLoading, setPostsLoading] = useState(false);
   const [pipelineStage, setPipelineStage] = useState<PipelineStage>("idle");
   const [pipelineCandidates, setPipelineCandidates] = useState<number | undefined>(undefined);
@@ -1149,19 +1252,24 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                     )}
 
                     {post.has_images && post.image_urls.length > 0 && (
-                      <div className={`cur-post-images cur-post-images-${Math.min(post.image_urls.length, 4)}`}>
-                        {post.image_urls.slice(0, 4).map((url, i) => (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            key={i}
-                            src={url}
-                            alt={post.image_alts[i] || ""}
-                            className="cur-post-img"
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                            onClick={() => setLightbox({ urls: post.image_urls, index: i })}
-                          />
-                        ))}
+                      <div className="cur-post-images-wrap">
+                        {aiLabels[post.uri]?.ai_generated && (
+                          <span className="cur-ai-label">AI Generated</span>
+                        )}
+                        <div className={`cur-post-images cur-post-images-${Math.min(post.image_urls.length, 4)}`}>
+                          {post.image_urls.slice(0, 4).map((url, i) => (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img
+                              key={i}
+                              src={url}
+                              alt={post.image_alts[i] || ""}
+                              className="cur-post-img"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              onClick={() => setLightbox({ urls: post.image_urls, index: i })}
+                            />
+                          ))}
+                        </div>
                       </div>
                     )}
                     {post.has_images && post.image_urls.length === 0 && post.image_count > 0 && (
@@ -1206,12 +1314,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                         </svg>
                         {formatCount(post.repost_count)}
                       </span>
-                      <span className="cur-post-stat" title="Likes">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <button
+                        className={`cur-post-stat cur-post-like-btn ${likeState[post.uri]?.liked ? "cur-post-liked" : ""}`}
+                        title={likeState[post.uri]?.liked ? "Unlike" : "Like"}
+                        disabled={likeState[post.uri]?.pending}
+                        onClick={() => toggleLike(post.uri, !!likeState[post.uri]?.liked, likeState[post.uri]?.likeUri)}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill={likeState[post.uri]?.liked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                           <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                         </svg>
-                        {formatCount(post.like_count)}
-                      </span>
+                        {formatCount(post.like_count + (likeState[post.uri]?.liked ? 1 : 0))}
+                      </button>
                       <span className="cur-post-stat" title="Quotes">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                           <path d="M3 21c3 0 5-2 5-5V7H3v8h4" />
@@ -1532,6 +1645,37 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               {lightbox.index + 1} / {lightbox.urls.length}
             </div>
           )}
+        </div>
+      )}
+      {/* Bluesky auth prompt */}
+      {showBskyAuth && (
+        <div className="cur-bsky-auth-overlay" onClick={() => setShowBskyAuth(false)}>
+          <div className="cur-bsky-auth-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Sign in with Bluesky</h3>
+            <p>Connect your Bluesky account to like, repost, and follow from here.</p>
+            <input
+              type="text"
+              value={bskyHandle}
+              onChange={(e) => { setBskyHandle(e.target.value); setBskyAuthError(""); }}
+              placeholder="yourname.bsky.social"
+              autoFocus
+              onKeyDown={(e) => { if (e.key === "Enter") startBskyAuth(); }}
+              className="cur-bsky-auth-input"
+            />
+            {bskyAuthError && <div className="cur-bsky-auth-error">{bskyAuthError}</div>}
+            <div className="cur-bsky-auth-actions">
+              <button className="cur-bsky-auth-cancel" onClick={() => setShowBskyAuth(false)}>
+                Cancel
+              </button>
+              <button
+                className="cur-bsky-auth-submit"
+                onClick={startBskyAuth}
+                disabled={!bskyHandle.trim() || bskyAuthLoading}
+              >
+                {bskyAuthLoading ? "Redirecting\u2026" : "Sign in"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </>
