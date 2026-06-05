@@ -1087,8 +1087,11 @@
   transform: translateY(-1px);
 }
 .cur-post-branch.active{
-  background: var(--ink);
-  border-color: var(--ink);
+  /* while the panel is open (loading + after generating) the pill goes ghost,
+     not black — transparent with the green outline/text. */
+  background: transparent;
+  border-color: var(--aurora-deep);
+  color: var(--aurora-deep);
   box-shadow: none;
 }
 
@@ -1180,7 +1183,8 @@
 
 /* loading dots sit on the green Explore pill — keep them visible */
 .cur-post-branch .cur-dots-inline{ margin-left: 3px; }
-.cur-post-branch .cur-dots-inline span{ background: #fff; }
+/* dots follow the button text colour (green while the ghost/loading state) */
+.cur-post-branch .cur-dots-inline span{ background: currentColor; }
 
 /* the Explore icon's branches unfurl when the panel opens */
 .cur-ex-sprout{ stroke-dasharray: 18; stroke-dashoffset: 0; }
