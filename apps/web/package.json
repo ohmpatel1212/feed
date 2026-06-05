@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
+    "@atproto/api": "^0.19.19",
+    "@atproto/oauth-client-node": "^0.3.17",
     "@base-ui/react": "^1.4.1",
     "@google-cloud/cloud-sql-connector": "^1.10.0",
     "@google-cloud/secret-manager": "^6.1.2",

@@ -7,7 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { getSearchRunForUser } from "@/lib/pg";
 import { bskyQuery } from "@/lib/bsky-pg";
 
@@ -48,8 +48,7 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const { id } = await ctx.params;
 
   const run = await getSearchRunForUser(id, auth.userId);

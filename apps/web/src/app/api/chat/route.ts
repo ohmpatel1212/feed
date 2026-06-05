@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   getFeedForUser,
   getFeed,
@@ -138,8 +138,7 @@ interface UpdateFeedConfigArgs {
 
 export async function POST(req: NextRequest) {
   const t0 = performance.now();
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const tAuth = performance.now();
 
   try {
@@ -300,8 +299,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const t0 = performance.now();
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const tAuth = performance.now();
 
   const feedId = Number(req.nextUrl.searchParams.get("feedId"));
