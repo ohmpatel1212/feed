@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { ensureEnvFromSecret } from "@/lib/secrets";
 import type { Stats } from "@/lib/introspect/types";
 
@@ -29,8 +29,7 @@ interface GeneratedQuestion {
 }
 
 export async function POST(req: NextRequest) {
-  const authResult = await requireAuth(req);
-  if (isAuthError(authResult)) return authResult;
+  const authResult = await requireAuth();
 
   let body: QuestionRequest;
   try {

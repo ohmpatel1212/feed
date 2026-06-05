@@ -1,0 +1,102 @@
+/* ── Onboarding Tour — cursor + label only ───── */
+
+.tour-cursor{
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  pointer-events: none;
+  will-change: transform;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.2));
+}
+
+/* Label card that appears beside the cursor */
+.tour-label{
+  position: absolute;
+  width: 260px;
+  background: #fbfaf6;
+  border: 1px solid rgba(11,24,20,0.1);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 4px 20px rgba(11,24,20,0.12);
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none;
+}
+.tour-label.visible{
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Below-right: default, label drops down from cursor tip */
+.tour-label.tour-label-below-right{
+  top: 22px;
+  left: 24px;
+  transform: translateY(6px);
+}
+.tour-label.tour-label-below-right.visible{
+  transform: translateY(0);
+}
+
+/* Above-right: label floats up-right from cursor */
+.tour-label.tour-label-above-right{
+  bottom: 20px;
+  left: 24px;
+  transform: translateY(-6px);
+}
+.tour-label.tour-label-above-right.visible{
+  transform: translateY(0);
+}
+
+.tour-label-step{
+  font-family: var(--rf-mono, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #a8b0ab;
+  margin-bottom: 6px;
+}
+.tour-label-text{
+  font-family: var(--rf-body, system-ui, sans-serif);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: #0b1814;
+  margin-bottom: 14px;
+}
+
+.tour-label-actions{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tour-btn-skip{
+  background: none;
+  border: none;
+  font-family: var(--rf-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #a8b0ab;
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+.tour-btn-skip:hover{ color: #3a4a44; }
+.tour-btn-next{
+  background: #0b1814;
+  color: #fbfaf6;
+  border: none;
+  font-family: var(--rf-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 7px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tour-btn-next:hover{ background: #1a2e28; }
+
+@media (max-width: 767px){
+  .tour-cursor{ display: none; }
+}

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   deleteRerankPrompt,
   getRerankPromptForUser,
@@ -13,8 +13,7 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const { id } = await ctx.params;
 
   const prompt = await getRerankPromptForUser(id, auth.userId);
@@ -39,8 +38,7 @@ export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const { id } = await ctx.params;
 
   let body: { name?: unknown };
@@ -60,8 +58,7 @@ export async function DELETE(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const { id } = await ctx.params;
   await deleteRerankPrompt(id, auth.userId);
   return NextResponse.json({ ok: true });

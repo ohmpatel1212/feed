@@ -1,3 +1,16 @@
+// --- User Profile ---
+
+export interface UserProfile {
+  uid: string;
+  name: string;
+  email: string;
+  photoURL: string;
+  blueskyHandle: string;
+  blueskyDid: string;
+  bskyAppPassword: string;
+  onboardedAt: string;
+}
+
 // --- Mechanical Filters ---
 // Only fields wired to a read-path action live here. Everything else was
 // removed in the curator redesign (see DECISIONS.md).

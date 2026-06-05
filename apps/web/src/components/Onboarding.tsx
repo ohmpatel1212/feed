@@ -14,6 +14,7 @@ export interface UserProfile {
   photoURL: string;
   blueskyHandle: string;
   blueskyDid: string;
+  bskyAppPassword: string;
   onboardedAt: string;
 }
 
@@ -49,6 +50,7 @@ export function useAuth() {
                 photoURL: row.photo_url || u.photoURL || "",
                 blueskyHandle: row.bluesky_handle || "",
                 blueskyDid: row.bluesky_did || "",
+                bskyAppPassword: row.bsky_app_password ? "••••" : "",
                 onboardedAt: (row.created_at && typeof row.created_at === "string") ? row.created_at : new Date().toISOString(),
               };
               localStorage.setItem(`ripple_profile_${u.uid}`, JSON.stringify(p));
@@ -76,6 +78,10 @@ export function useAuth() {
         photoUrl: p.photoURL,
         blueskyHandle: p.blueskyHandle,
         blueskyDid: p.blueskyDid,
+        // Only send the real password, not the masked placeholder
+        ...(p.bskyAppPassword && p.bskyAppPassword !== "••••"
+          ? { bskyAppPassword: p.bskyAppPassword }
+          : {}),
       }),
     }).catch(() => {});
   }
@@ -150,7 +156,10 @@ export default function Onboarding({
   const [user, setUser] = useState<User | null>(null);
   const [handle, setHandle] = useState("");
   const [did, setDid] = useState("");
+  const [appPassword, setAppPassword] = useState("");
   const [signingIn, setSigningIn] = useState(false);
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [error, setError] = useState("");
 
@@ -197,7 +206,29 @@ export default function Onboarding({
     }
   }
 
-  // ── Step 1: Bluesky Handle Resolution ──
+  // ── Step 1: Bluesky Sign-In ──
+
+  async function signInWithBluesky() {
+    if (!cleanHandle) return;
+    setOauthLoading(true);
+    setError("");
+    try {
+      const res = await authedFetch("/api/bsky/oauth/authorize", {
+        method: "POST",
+        body: JSON.stringify({ handle: cleanHandle }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to start Bluesky sign-in");
+      }
+      const { url } = await res.json();
+      // Redirect to Bluesky's authorization page
+      window.location.href = url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Sign-in failed");
+      setOauthLoading(false);
+    }
+  }
 
   async function resolveHandle() {
     if (!cleanHandle) return;
@@ -423,6 +454,7 @@ export default function Onboarding({
       photoURL: user.photoURL || "",
       blueskyHandle: cleanHandle,
       blueskyDid: did,
+      bskyAppPassword: appPassword,
       onboardedAt: new Date().toISOString(),
     };
     onComplete({ profile, feedId: feedResult?.feed?.id ?? null });
@@ -447,6 +479,7 @@ export default function Onboarding({
       photoURL: user.photoURL || "",
       blueskyHandle: cleanHandle,
       blueskyDid: did,
+      bskyAppPassword: appPassword,
       onboardedAt: new Date().toISOString(),
     };
     onComplete({ profile, feedId });
@@ -507,8 +540,7 @@ export default function Onboarding({
             </div>
             <h2>Welcome to Willow</h2>
             <p>
-              A quieter, more intentional feed — built on Bluesky. Let&apos;s get
-              you set up in under a minute.
+              Let&apos;s get you set up in under a minute.
             </p>
             <button
               className="onboarding-btn google"
@@ -532,9 +564,8 @@ export default function Onboarding({
           <div className="onboarding-content">
             <h2>Hey {firstName} — connect your Bluesky</h2>
             <p>
-              Link your Bluesky account so we can learn from your engagement
-              history and build a personalized feed. Just your public handle — no
-              password needed.
+              Sign in to link your account. This lets us learn from your
+              engagement history and lets you like posts directly from here.
             </p>
             <a
               href="https://bsky.app"
@@ -555,22 +586,61 @@ export default function Onboarding({
                 onChange={(e) => { setHandle(e.target.value); setError(""); }}
                 placeholder="yourname.bsky.social"
                 autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") resolveHandle(); }}
+                onKeyDown={(e) => { if (e.key === "Enter") signInWithBluesky(); }}
               />
-              {error && <div className="onboarding-error">{error}</div>}
             </div>
-            <div className="onboarding-actions">
-              <button className="onboarding-btn ghost" onClick={skipBluesky}>
-                Skip for now
-              </button>
+            {error && <div className="onboarding-error">{error}</div>}
+            <button
+              className="onboarding-btn primary"
+              onClick={signInWithBluesky}
+              disabled={!handle.trim() || oauthLoading}
+              style={{ width: "100%" }}
+            >
+              {oauthLoading ? "Redirecting\u2026" : "Sign in with Bluesky"}
+            </button>
+            {!showManualEntry && (
               <button
-                className="onboarding-btn primary"
-                onClick={resolveHandle}
-                disabled={!handle.trim() || resolving}
+                className="onboarding-manual-toggle"
+                onClick={() => setShowManualEntry(true)}
               >
-                {resolving ? "Verifying\u2026" : "Connect"}
+                Or connect with handle only (no sign-in) &darr;
               </button>
-            </div>
+            )}
+            {showManualEntry && (
+              <div style={{ marginTop: 16 }}>
+                <div className="onboarding-field">
+                  <label>
+                    App password
+                    <span className="onboarding-field-hint"> (optional — alternative to OAuth)</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={appPassword}
+                    onChange={(e) => setAppPassword(e.target.value)}
+                    placeholder="xxxx-xxxx-xxxx-xxxx"
+                    onKeyDown={(e) => { if (e.key === "Enter") resolveHandle(); }}
+                  />
+                  <div className="onboarding-field-help">
+                    Generate at{" "}
+                    <a
+                      href="https://bsky.app/settings/app-passwords"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      bsky.app/settings/app-passwords
+                    </a>
+                  </div>
+                </div>
+                <button
+                  className="onboarding-btn ghost"
+                  onClick={resolveHandle}
+                  disabled={!handle.trim() || resolving}
+                  style={{ width: "100%" }}
+                >
+                  {resolving ? "Verifying\u2026" : "Connect with handle only"}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

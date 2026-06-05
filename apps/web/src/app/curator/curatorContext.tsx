@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext } from "react";
-import type { UserProfile } from "@/components/Onboarding";
+import type { UserProfile } from "@/lib/types";
 
 export interface SavedFeed {
   id: string;

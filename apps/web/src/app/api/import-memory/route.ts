@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { createFeed, updateFeed } from "@/lib/pg";
 import { ensureEnvFromSecret } from "@/lib/secrets";
 
@@ -47,8 +47,7 @@ const TOOLS: Anthropic.Tool[] = [
 ];
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   const { memoryText, source } = await req.json();
 
