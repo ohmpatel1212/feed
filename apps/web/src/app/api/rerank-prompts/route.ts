@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   createRerankPrompt,
   listRerankPromptsForUser,
@@ -8,8 +8,7 @@ import {
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const rows = await listRerankPromptsForUser(auth.userId);
   return NextResponse.json({
     prompts: rows.map((r) => ({
@@ -23,8 +22,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   let body: { name?: unknown; system_prompt?: unknown };
   try {

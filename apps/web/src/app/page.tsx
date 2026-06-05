@@ -5,11 +5,25 @@ import dynamic from "next/dynamic";
 import { motion } from "motion/react";
 import Link from "next/link";
 import "./landing.css";
-import Logo from "@/components/Logo";
-import ShaderLogo from "@/components/ShaderLogo";
 import ShaderSendButton from "@/components/ShaderSendButton";
 
 const World = dynamic(() => import("@/components/ui/globe").then((m) => m.World), { ssr: false });
+
+function BlueskyIcon() {
+  return (
+    <svg viewBox="0 0 600 530" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M135.72 44.03C202.216 93.951 273.74 195.17 300 249.49c26.262-54.316 97.782-155.54 164.28-205.46C512.26 8.009 590-19.862 590 68.825c0 17.712-10.155 148.79-16.111 170.07-20.703 73.984-96.144 92.854-163.25 81.433 117.3 19.964 147.14 86.092 82.697 152.22-122.39 125.59-175.91-31.511-189.63-71.766-2.514-7.38-3.69-10.832-3.708-7.896-.017-2.936-1.193.516-3.707 7.896-13.714 40.255-67.233 197.36-189.63 71.766-64.444-66.128-34.605-132.26 82.697-152.22-67.108 11.421-142.55-7.45-163.25-81.433C20.15 217.613 9.997 86.535 9.997 68.825c0-88.687 77.742-60.816 125.72-24.795z" />
+    </svg>
+  );
+}
+
+function LinkedInIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.34V9h3.42v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.22.79 24 1.77 24h20.45c.98 0 1.78-.78 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z" />
+    </svg>
+  );
+}
 
 const globeConfig = {
   pointSize: 4,
@@ -190,14 +204,12 @@ export default function LandingPageV2() {
     <div className="rf-page">
       <div className="grain" />
       <div className="vignette" />
-      <div style={{ position: "fixed", top: 24, left: 32, zIndex: 50, fontFamily: "var(--rf-display), 'Instrument Serif', serif", fontSize: 22, color: "var(--cream, #f3ecdd)", letterSpacing: "-0.02em" }}>
-        willow
-      </div>
-      <nav style={{ position: "fixed", top: 24, right: 32, zIndex: 50, display: "flex", alignItems: "center", gap: 24 }}>
-        <a href="#mission" style={{ fontFamily: "var(--rf-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--parchment-dim, #a8a090)", textDecoration: "none", transition: "color 0.2s" }}>Mission</a>
-        <a href="#how" style={{ fontFamily: "var(--rf-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--parchment-dim, #a8a090)", textDecoration: "none", transition: "color 0.2s" }}>How it Works</a>
-        <a href="#about" style={{ fontFamily: "var(--rf-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--parchment-dim, #a8a090)", textDecoration: "none", transition: "color 0.2s" }}>Team</a>
-        <Link href="/curator" style={{ fontFamily: "var(--rf-mono)", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#000", textDecoration: "none", padding: "8px 18px", borderRadius: 999, background: "#fff", fontWeight: 700 }}>
+      <div className="landing-wordmark">willow</div>
+      <nav className="landing-nav">
+        <a href="#mission" className="landing-nav-link">Mission</a>
+        <a href="#how" className="landing-nav-link">How it Works</a>
+        <a href="#about" className="landing-nav-link">Team</a>
+        <Link href="/curator" className="landing-nav-cta">
           Try Demo &rarr;
         </Link>
       </nav>
@@ -206,16 +218,16 @@ export default function LandingPageV2() {
 
       {/* HERO with Globe */}
       <section className="hero" style={{ minHeight: "100vh", display: "flex", alignItems: "flex-start", position: "relative", overflow: "hidden" }}>
-        <div style={{ position: "absolute", width: "100%", bottom: -180, height: "100%", zIndex: 1 }}>
+        <div className="hero-globe">
           <World data={sampleArcs} globeConfig={globeConfig} />
         </div>
-        <div style={{ position: "absolute", width: "100%", bottom: 0, height: 160, background: "linear-gradient(to bottom, transparent, #000000)", zIndex: 2, pointerEvents: "none" }} />
-        <div className="wrap hero-content" style={{ position: "relative", zIndex: 3, textAlign: "center", maxWidth: 720, margin: "0 auto", paddingTop: "8vh" }}>
+        <div className="hero-globe-fade" />
+        <div className="wrap hero-content hero-content--centered">
           <motion.h1
             initial={{ opacity: 0, y: -60 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 1, ease: "easeOut" }}
-            style={{ fontSize: "clamp(2.4rem, 5vw, 4rem)", lineHeight: 1.15 }}
+            className="hero-title"
           >
             A feed you <span className="it">actually</span> choose.
           </motion.h1>
@@ -223,12 +235,12 @@ export default function LandingPageV2() {
             initial={{ opacity: 0, y: -40 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 1, ease: "easeOut", delay: 0.3 }}
-            className="hero-sub" style={{ maxWidth: 600, margin: "6px auto 2rem", fontSize: "1.25rem", lineHeight: 1.7 }}>
+            className="hero-sub hero-sub--centered">
             In the same way you <em>curate what you eat</em>, you must curate what you consume online to stay healthy.
             We&apos;re building the tools to help you do that.
           </motion.p>
-          <p style={{ fontFamily: "var(--rf-mono)", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#ffffff", fontWeight: 700, marginBottom: 10, marginTop: 550, textAlign: "center" }}>Join the Waitlist</p>
-          <div style={{ maxWidth: 420, margin: "0 auto 16px" }}>
+          <p className="hero-waitlist-label">Join the Waitlist</p>
+          <div className="hero-waitlist-form">
             <SubscribeForm />
           </div>
         </div>
@@ -382,7 +394,8 @@ export default function LandingPageV2() {
                   Worked in robotics for 10 years. Pivoting to the most important problems in our world today. My goal: to build online spaces that make people their best selves.
                 </p>
                 <div className="about-links">
-                  <a href="https://bsky.app/profile/wawrio.bsky.social" className="about-link" target="_blank" rel="noopener noreferrer">Bluesky</a>
+                  <a href="https://bsky.app/profile/wawrio.bsky.social" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="Bluesky"><BlueskyIcon /></a>
+                  <a href="https://www.linkedin.com/in/christian-neizonek-613b9ba0/" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn"><LinkedInIcon /></a>
                 </div>
               </div>
             </div>
@@ -398,7 +411,8 @@ export default function LandingPageV2() {
                   Former content creator turned engineer. Building better incentive systems for social media &mdash; feeds that serve people, not platforms.
                 </p>
                 <div className="about-links">
-                  <a href="#" className="about-link" target="_blank" rel="noopener noreferrer">Bluesky</a>
+                  <a href="https://bsky.app/profile/ohmcpatel.bsky.social" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="Bluesky"><BlueskyIcon /></a>
+                  <a href="https://www.linkedin.com/in/ohm-patel-84856223b/" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn"><LinkedInIcon /></a>
                 </div>
               </div>
             </div>
@@ -411,10 +425,11 @@ export default function LandingPageV2() {
                 <h3 className="about-name">Amir Ahanchi</h3>
                 <p className="about-role">Engineer</p>
                 <p className="about-bio">
-                  Short bio goes here. What you care about, what you&apos;ve built, why this project matters to you personally.
+                  Engineer with years in social media space. Growing up in Iran, seeing how centralized power can control/exploit people and going through Meditation retreats have helped me deeply care about intentional living, agency, and the need for open platforms people can truly trust.
                 </p>
                 <div className="about-links">
-                  <a href="https://bsky.app/profile/ahanchi.bsky.social" className="about-link" target="_blank" rel="noopener noreferrer">Bluesky</a>
+                  <a href="https://bsky.app/profile/amirmasti.bsky.social" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="Bluesky"><BlueskyIcon /></a>
+                  <a href="https://www.linkedin.com/in/ahanchi/" className="about-link" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn"><LinkedInIcon /></a>
                 </div>
               </div>
             </div>

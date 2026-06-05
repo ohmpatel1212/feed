@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import { activateRerankPromptVersion } from "@/lib/pg";
 
 export const runtime = "nodejs";
@@ -8,8 +8,7 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
   const { id } = await ctx.params;
 
   let body: { version_id?: unknown };

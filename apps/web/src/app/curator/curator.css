@@ -135,6 +135,73 @@
 .cur-feed-item:hover .cur-feed-delete{ opacity: 0.7; }
 .cur-feed-delete:hover{ opacity: 1 !important; color: var(--rose); }
 
+/* ── Verify identity box ────────────────────── */
+.cur-verify-box{
+  margin: 10px;
+  padding: 14px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(125,203,165,0.08), rgba(125,203,165,0.03));
+  border: 1px solid rgba(125,203,165,0.25);
+}
+.cur-verify-head{
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--rf-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.cur-verify-head svg{ color: var(--aurora-deep); flex-shrink: 0; }
+.cur-verify-desc{
+  margin: 8px 0 10px;
+  font-family: var(--rf-body);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.cur-verify-bar-track{
+  height: 6px;
+  border-radius: 999px;
+  background: var(--hair);
+  overflow: hidden;
+}
+.cur-verify-bar-fill{
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--aurora-deep), var(--aurora));
+  transition: width 0.6s ease;
+}
+.cur-verify-bar-label{
+  margin-top: 6px;
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--ink-4);
+}
+.cur-verify-btn{
+  margin-top: 12px;
+  width: 100%;
+  padding: 8px 0;
+  border-radius: 999px;
+  border: 1px solid rgba(62,138,108,0.35);
+  background: rgba(125,203,165,0.1);
+  color: var(--aurora-deep);
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.cur-verify-btn:hover{
+  background: rgba(125,203,165,0.2);
+  border-color: var(--aurora-deep);
+}
+
 .cur-new-feed{
   margin: 10px;
   padding: 12px;
@@ -305,6 +372,7 @@
 @media (min-width: 768px){
   .cur-workbench[data-right-pane="chat"] .ctrl-tower{ display: none; }
   .cur-workbench[data-right-pane="tune"] .cur-chat-pane{ display: none; }
+
 }
 
 /* ── SEGMENTED CHAT ↔ TUNE TOGGLE ───────────── */
@@ -352,15 +420,23 @@
   margin: 0 auto;
 }
 
-.cur-msg{ margin-bottom: 22px; }
+.cur-msg{ margin-bottom: 16px; display: flex; flex-direction: column; }
+/* User messages: right-aligned chat bubble, like a standard chat UI. */
 .cur-msg-user{
-  padding-left: 14px;
-  border-left: 2px solid var(--aurora-deep);
-  color: var(--ink-2);
-  font-size: 14px;
-  font-style: italic;
-  font-family: var(--rf-display);
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 16px 16px 4px 16px;
+  background: rgba(125,203,165,0.14);
+  color: var(--ink);
+  font-family: var(--rf-body);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
+/* Assistant messages: plain text, no bubble. */
 .cur-msg-assistant p{
   font-size: 15px;
   color: var(--ink);
@@ -369,8 +445,7 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.cur-msg-assistant p em{ color: var(--aurora-deep); font-family: var(--rf-display); font-style: italic; }
-.cur-msg-user{ overflow-wrap: anywhere; word-break: break-word; }
+.cur-msg-assistant p em{ color: var(--aurora-deep); font-family: var(--rf-display); font-style: normal; }
 
 .cur-options{ display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .cur-opt{
@@ -629,7 +704,11 @@
   flex-direction: column;
   gap: 10px;
   padding: 16px 18px;
-  margin: 12px 0;
+  /* Match the Bluesky embed's visual width (600px iframe * 0.85 zoom ≈ 510px)
+     and center it, so custom + embed view modes line up. */
+  max-width: calc(600px * 0.85);
+  width: 100%;
+  margin: 12px auto;
   border-radius: 12px;
   border: 1px solid var(--hair);
   background: #fff;
@@ -673,7 +752,7 @@
 }
 .cur-post-name{
   font-family: var(--rf-display);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--ink);
   line-height: 1.25;
@@ -746,8 +825,8 @@
 .cur-post-score.low{ background: rgba(11,24,20,0.06); color: var(--ink-3); }
 
 .cur-post-card-body{
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--ink);
   white-space: pre-wrap;
   word-wrap: break-word;
@@ -823,6 +902,28 @@
   transition: filter 0.15s;
 }
 .cur-post-img:hover{ filter: brightness(0.85); }
+
+/* Image wrapper — positions the AI label badge */
+.cur-post-images-wrap{
+  position: relative;
+}
+.cur-ai-label{
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(220, 60, 60, 0.85);
+  padding: 2px 7px;
+  border-radius: 4px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
 
 /* Fallback note when image URLs aren't available */
 .cur-post-images-note{
@@ -913,6 +1014,25 @@
 .cur-post-stat svg{
   opacity: 0.7;
 }
+.cur-post-like-btn{
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.cur-post-like-btn:hover{
+  color: #e5484d;
+}
+.cur-post-like-btn:disabled{
+  opacity: 0.5;
+  cursor: wait;
+}
+.cur-post-liked{
+  color: #e5484d;
+}
+.cur-post-liked svg{
+  opacity: 1;
+}
 .cur-post-open{
   margin-left: auto;
   padding-top: 8px;
@@ -925,6 +1045,211 @@
   transition: color 0.18s;
 }
 .cur-post-open:hover{ color: var(--aurora-deep); }
+
+/* --- Branch affordance + inline panel --- */
+/* The Branch button lives in its own centered row just below each post card
+   (not inside the card) so it reads as a prominent, deliberate action. */
+.cur-post-item{ display: block; }
+.cur-post-branch-row{
+  display: flex;
+  justify-content: center;
+  /* pull up slightly so it sits right at the card's bottom edge */
+  margin: -4px auto 16px;
+  max-width: calc(600px * 0.85);
+}
+.cur-post-branch{
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 20px;
+  border: 1px solid var(--aurora-deep);
+  border-radius: 999px;
+  background: var(--aurora-deep);
+  color: #fff;
+  font-family: var(--rf-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.18s;
+  box-shadow: 0 2px 10px rgba(125,203,165,0.35);
+}
+.cur-post-branch svg{ opacity: 0.95; }
+.cur-post-branch:hover{
+  filter: brightness(0.96);
+  box-shadow: 0 4px 14px rgba(125,203,165,0.45);
+  transform: translateY(-1px);
+}
+.cur-post-branch.active{
+  background: var(--ink);
+  border-color: var(--ink);
+  box-shadow: none;
+}
+
+.cur-branch-panel{
+  max-width: calc(600px * 0.85);
+  margin: 0 auto 16px;
+  padding: 14px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: rgba(125,203,165,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cur-branch-hint{
+  font-family: var(--rf-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+.cur-branch-status{
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.cur-branch-chips{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cur-branch-chip{
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--hair);
+  background: #fff;
+  color: var(--ink-2);
+  font-family: var(--rf-body);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.18s;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 100%;
+}
+.cur-branch-chip:hover:not(:disabled){
+  border-color: var(--aurora-deep);
+  background: rgba(125,203,165,0.1);
+  color: var(--ink);
+}
+.cur-branch-chip.selected{
+  border-color: var(--aurora-deep);
+  background: rgba(125,203,165,0.16);
+  color: var(--ink);
+  font-weight: 500;
+}
+.cur-branch-chip:disabled{ opacity: 0.45; cursor: default; }
+.cur-branch-chip-kind{
+  font-family: var(--rf-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.cur-branch-chip.selected .cur-branch-chip-kind{ color: var(--aurora-deep); }
+.cur-branch-chip-label{ line-height: 1.3; }
+.cur-branch-actions{
+  display: flex; align-items: center; gap: 10px;
+}
+.cur-branch-create{
+  padding: 8px 16px;
+  border-radius: 9px;
+  border: 1px solid var(--aurora-deep);
+  background: var(--aurora-deep);
+  color: #fff;
+  font-family: var(--rf-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.cur-branch-create:disabled{ opacity: 0.5; cursor: default; }
+.cur-branch-create:hover:not(:disabled){ filter: brightness(0.96); }
+.cur-branch-cancel,
+.cur-branch-retry{
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-family: var(--rf-body);
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.cur-branch-cancel:hover,
+.cur-branch-retry:hover{ color: var(--ink); }
+.cur-dots-inline{ display: inline-flex; gap: 4px; }
+.cur-dots-inline span{
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--aurora-deep);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.cur-dots-inline span:nth-child(2){ animation-delay: 0.15s; }
+.cur-dots-inline span:nth-child(3){ animation-delay: 0.3s; }
+
+/* Embedded source post atop a branched feed's chat */
+.cur-branch-source{
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--hair);
+}
+.cur-branch-source-label{
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px;
+  font-family: var(--rf-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.cur-branch-source-label svg{ opacity: 0.8; }
+
+/* Chat source card is in the narrow chat pane — render it much smaller than a
+   feed post, in whichever style (embed vs custom) the user's view setting uses. */
+.cur-branch-source .bluesky-embed,
+.cur-branch-source iframe{
+  max-width: 100% !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+.cur-branch-source-card{
+  display: block;
+  padding: 9px 11px;
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  background: #fff;
+  text-decoration: none;
+  transition: border-color 0.18s;
+}
+.cur-branch-source-card:hover{ border-color: var(--aurora-deep); }
+.cur-branch-source-author{
+  display: flex; align-items: baseline; gap: 5px;
+  margin-bottom: 3px;
+  font-family: var(--rf-display);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.cur-branch-source-handle{
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cur-branch-source-text{
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 .cur-feed-posts-header{
   display: flex; align-items: center; justify-content: space-between;
@@ -1053,11 +1378,15 @@
    aligns with the iframe's left/right edges. */
 .cur-post-embed-wrap{
   --embed-w: calc(600px * 0.85);
-  margin: 12px 0;
-  padding: 12px 0;
+  padding: 12px 0 0;
+}
+/* In embed mode the divider belongs to the whole item (card + branch), so the
+   Branch row sits ABOVE the split, directly under the card. */
+.cur-post-item-embed{
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--hair);
 }
-.cur-post-embed-wrap:last-child{ border-bottom: none; }
+.cur-post-item-embed:last-child{ border-bottom: none; }
 .cur-post-embed-frame{
   max-width: var(--embed-w);
   margin: 0 auto;
@@ -1286,6 +1615,24 @@
   font-family: var(--rf-mono);
   font-size: 12px;
   color: var(--ink);
+}
+.cur-bsky-connect-btn{
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(62,138,108,0.3);
+  background: rgba(62,138,108,0.08);
+  color: var(--aurora-deep);
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.cur-bsky-connect-btn:hover{
+  background: rgba(62,138,108,0.16);
+  border-color: var(--aurora-deep);
   letter-spacing: 0.03em;
 }
 
@@ -1941,6 +2288,154 @@
   /* Sits between the in-flow sidebar and main */
 }
 
+/* ── COMMAND-K FEED SEARCH ────────────────────── */
+.cmdk-backdrop{
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(11,24,20,0.25);
+  backdrop-filter: blur(4px);
+  animation: cmdk-fade-in 0.12s ease;
+}
+.cmdk-dialog{
+  position: fixed;
+  top: min(20%, 160px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 101;
+  width: min(520px, calc(100vw - 32px));
+  background: var(--paper, #fbfaf6);
+  border: 1px solid var(--hair-strong, rgba(11,24,20,0.16));
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(11,24,20,0.18), 0 0 0 1px rgba(11,24,20,0.06);
+  overflow: hidden;
+  animation: cmdk-slide-in 0.14s ease;
+  outline: none;
+}
+@keyframes cmdk-fade-in{ from{ opacity: 0 } to{ opacity: 1 } }
+@keyframes cmdk-slide-in{
+  from{ opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.98); }
+  to{ opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.cmdk-input-wrap{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--hair);
+}
+.cmdk-search-icon{
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.cmdk-input{
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--rf-body);
+  font-size: 15px;
+  color: var(--ink);
+  caret-color: var(--aurora-deep);
+}
+.cmdk-input::placeholder{ color: var(--ink-4); }
+.cmdk-kbd{
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+  background: var(--paper-3);
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--hair);
+  flex-shrink: 0;
+}
+
+.cmdk-list{
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cmdk-empty{
+  padding: 24px 16px;
+  text-align: center;
+  font-family: var(--rf-body);
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.cmdk-item{
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.1s;
+  text-align: left;
+}
+.cmdk-item.selected{ background: rgba(125,203,165,0.12); }
+.cmdk-item:hover{ background: rgba(125,203,165,0.08); }
+.cmdk-item[data-active]{ border-left: 2px solid var(--aurora-deep); }
+
+.cmdk-swatch{
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.cmdk-item-text{
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cmdk-item-name{
+  font-family: var(--rf-display);
+  font-size: 15px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-item-sub{
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-item-meta{
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  flex-shrink: 0;
+}
+
+.cmdk-separator{
+  height: 1px;
+  background: var(--hair);
+  margin: 4px 8px;
+}
+.cmdk-action-icon{
+  width: 20px; height: 20px;
+  border-radius: 6px;
+  border: 1px dashed var(--hair-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
 /* ── MOBILE (<768px) ─────────────────────────── */
 @media (max-width: 767px){
   /* Resizers don't make sense on mobile */
@@ -1992,4 +2487,90 @@
 
   /* Reveal the bottom tab nav */
   .cur-mobile-tabs{ display: flex; }
+}
+
+/* ── Bluesky auth prompt modal ─────────────── */
+.cur-bsky-auth-overlay{
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.3);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.cur-bsky-auth-modal{
+  background: #fff;
+  border: 1px solid var(--hair-strong);
+  border-radius: 14px;
+  padding: 32px 28px;
+  max-width: 380px;
+  width: 90%;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.1);
+  animation: modalIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cur-bsky-auth-modal h3{
+  font-family: var(--rf-display);
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--ink);
+  margin: 0 0 8px;
+}
+.cur-bsky-auth-modal p{
+  font-size: 13px;
+  color: var(--ink-3);
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+.cur-bsky-auth-input{
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--hair-strong);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--rf-body);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+.cur-bsky-auth-input:focus{ border-color: #3e8a6c; }
+.cur-bsky-auth-input::placeholder{ color: var(--ink-4); }
+.cur-bsky-auth-error{
+  margin-top: 8px;
+  font-size: 12px;
+  color: #c4453a;
+}
+.cur-bsky-auth-actions{
+  display: flex; gap: 10px; justify-content: flex-end;
+  margin-top: 16px;
+}
+.cur-bsky-auth-cancel{
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: none;
+  border: 1px solid var(--hair-strong);
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.cur-bsky-auth-cancel:hover{ border-color: var(--ink-4); color: var(--ink); }
+.cur-bsky-auth-submit{
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: var(--ink);
+  border: none;
+  font-family: var(--rf-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper);
+  cursor: pointer;
+}
+.cur-bsky-auth-submit:hover{ background: var(--ink-2); }
+.cur-bsky-auth-submit:disabled{ opacity: 0.4; cursor: default; }
+@keyframes modalIn{
+  0%{ opacity: 0; transform: scale(0.95); }
+  100%{ opacity: 1; transform: scale(1); }
 }

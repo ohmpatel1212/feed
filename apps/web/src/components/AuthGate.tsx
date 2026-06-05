@@ -34,7 +34,8 @@ export default function AuthGate({
   const isPublic =
     pathname === "/" ||
     pathname?.startsWith("/api") ||
-    pathname?.startsWith("/introspect");
+    pathname?.startsWith("/introspect") ||
+    pathname?.startsWith("/oauth");
 
   useEffect(() => {
     if (isPublic) {
@@ -69,8 +70,10 @@ export default function AuthGate({
         style={{
           minHeight: "100dvh",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
+          gap: 20,
           background: "#fbfaf6",
           color: "#6a7570",
           fontFamily: "var(--rf-display), 'Instrument Serif', serif",
@@ -78,7 +81,18 @@ export default function AuthGate({
           fontSize: 18,
         }}
       >
-        Checking session…
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            border: "2px solid #ece8de",
+            borderTopColor: "#3e8a6c",
+            borderRadius: "50%",
+            animation: "authgate-spin 0.8s linear infinite",
+          }}
+        />
+        Checking session&hellip;
+        <style>{`@keyframes authgate-spin { to { transform: rotate(360deg) } }`}</style>
       </div>
     );
   }

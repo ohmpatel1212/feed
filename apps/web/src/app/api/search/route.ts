@@ -24,7 +24,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth, isAuthError } from "@/lib/auth";
+import { requireAuth } from "@/lib/auth";
 import {
   getRerankPromptForUser,
   insertSearchRun,
@@ -51,8 +51,7 @@ function clampInt(v: unknown, lo: number, hi: number, fallback: number): number 
 
 export async function POST(req: NextRequest) {
   const tTotal0 = performance.now();
-  const auth = await requireAuth(req);
-  if (isAuthError(auth)) return auth;
+  const auth = await requireAuth();
 
   let body: SearchBody;
   try {
