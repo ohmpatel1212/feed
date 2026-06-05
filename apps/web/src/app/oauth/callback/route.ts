@@ -11,7 +11,7 @@ import { query } from "@/lib/pg";
  * redirect to the curator.
  */
 export async function GET(req: NextRequest) {
-  const base = req.nextUrl.origin;
+  const base = process.env.NEXT_PUBLIC_URL || req.nextUrl.origin;
 
   try {
     const params = req.nextUrl.searchParams;
