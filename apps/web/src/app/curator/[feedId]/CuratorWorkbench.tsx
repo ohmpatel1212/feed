@@ -395,6 +395,11 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const [branchOptionsLoading, setBranchOptionsLoading] = useState(false);
   const [branchSelected, setBranchSelected] = useState<Set<number>>(new Set());
   const [branchCreating, setBranchCreating] = useState(false);
+  // Refs for the "Explore" branching-tree reveal: a trunk grows down the
+  // centre of the tree canvas and boughs curl out to each topic chip.
+  const branchTreeRef = useRef<HTMLDivElement | null>(null);
+  const branchWiresRef = useRef<SVGSVGElement | null>(null);
+  const branchTracePlayedRef = useRef<string>("");
 
   const endRef = useRef<HTMLDivElement>(null);
   // Single signature of the fields that, when changed, should re-fetch posts.
@@ -832,6 +837,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   }, [feedId]);
 
   function openBranch(postUri: string) {
+    branchTracePlayedRef.current = "";
     if (branchPanelUri === postUri) {
       setBranchPanelUri(null);
       return;
@@ -875,6 +881,155 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     finally { setBranchCreating(false); }
   }
 
+  // Sequential "Explore" reveal. Once the topic chips render, a trunk grows
+  // down the centre of the tree canvas, then boughs curl out to each chip in
+  // turn — chips are paired right/left descending row by row, each in its own
+  // row+side so a line never runs under another card. Chip positions are set
+  // imperatively (need the measured canvas width) and survive React re-renders
+  // because they're applied as inline styles, not via React props; the side
+  // class lives in the rendered className. Honours prefers-reduced-motion.
+  // Runs once per (post + options) load, guarded by branchTracePlayedRef.
+  useEffect(() => {
+    const NS = "http://www.w3.org/2000/svg";
+    const tree = branchTreeRef.current;
+    const svg = branchWiresRef.current;
+    if (!branchPanelUri || !branchOptions || branchOptions.length === 0) return;
+    if (!tree || !svg) return;
+
+    const key = `${branchPanelUri}:${branchOptions.length}`;
+    if (branchTracePlayedRef.current === key) return;
+    branchTracePlayedRef.current = key;
+
+    const chips = Array.from(
+      tree.querySelectorAll<HTMLElement>(".cur-branch-chip")
+    );
+    if (chips.length === 0) return;
+
+    const reduce = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+
+    const W = tree.clientWidth || 480;
+    // Two chips per row when there's room; on narrow/mobile widths stack one
+    // per row (alternating sides). The trunk stays centred either way so it
+    // lines up under the button.
+    const single = W < 420;
+    const perRow = single ? 1 : 2;
+    const centerX = W / 2;
+    // Keep the boughs in a tight central channel — short horizontal reach.
+    const OFFSET = single ? Math.min(20, W * 0.06) : Math.min(38, W * 0.08);
+    const chipMaxW = Math.min(240, Math.floor(W / 2 - OFFSET - 10));
+    const HEAD = 14; // top margin inside the canvas
+    const GAP = 16; // vertical gap between rows
+    const TRUNK = 260, BOUGH = 320, STEP = 280;
+    const rowCount = Math.ceil(chips.length / perRow);
+
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const drawPath = (
+      d: string,
+      width: number,
+      dur: number,
+      delay: number
+    ) => {
+      const p = document.createElementNS(NS, "path");
+      p.setAttribute("d", d);
+      p.setAttribute("fill", "none");
+      p.setAttribute("stroke", "var(--aurora-deep)");
+      p.setAttribute("stroke-width", String(width));
+      p.setAttribute("stroke-linecap", "round");
+      svg.appendChild(p);
+      if (reduce) return;
+      const len = p.getTotalLength();
+      p.style.strokeDasharray = String(len);
+      p.style.strokeDashoffset = String(len);
+      p.animate(
+        [{ strokeDashoffset: len }, { strokeDashoffset: 0 }],
+        { duration: dur, delay, easing: "cubic-bezier(.5,.05,.2,1)", fill: "forwards" }
+      );
+    };
+
+    // Phase 1: size + horizontally place each chip, then measure its rendered
+    // height (chips wrap, so rows can't use a fixed step or they'd overlap).
+    const meta = chips.map((chip, i) => {
+      const side = i % 2 === 0 ? 1 : -1; // even → right, odd → left
+      const chipX = centerX + side * OFFSET; // chip inner edge
+      chip.style.left = `${chipX}px`;
+      chip.style.maxWidth = `${chipMaxW}px`;
+      return { chip, i, side, chipX, row: Math.floor(i / perRow) };
+    });
+    const heights = meta.map((m) => m.chip.offsetHeight || 44);
+
+    // Phase 2: stack each row by its tallest chip, centring chips on the row.
+    const rowH: number[] = [];
+    for (let r = 0; r < rowCount; r++) {
+      let h = 0;
+      for (let k = r * perRow; k < Math.min((r + 1) * perRow, chips.length); k++) {
+        h = Math.max(h, heights[k]);
+      }
+      rowH[r] = h;
+    }
+    const rowCenterY: number[] = [];
+    let cursor = HEAD;
+    for (let r = 0; r < rowCount; r++) {
+      rowCenterY[r] = cursor + rowH[r] / 2;
+      cursor += rowH[r] + GAP;
+    }
+    const trunkEndY = rowCenterY[rowCount - 1];
+    tree.style.height = `${cursor + 4}px`; // exact height for this layout
+
+    // trunk grows down the spine (starts above the canvas, reaching the button)
+    drawPath(`M ${centerX} -30 L ${centerX} ${trunkEndY}`, 2.6, TRUNK, 0);
+
+    meta.forEach(({ chip, i, side, chipX, row }) => {
+      const chipY = rowCenterY[row];
+      const y0 = chipY - 22; // bough taps the trunk a little above the chip
+      const delay = TRUNK + i * STEP;
+
+      chip.style.top = `${chipY}px`;
+
+      // Bough leaves the trunk going straight down, then curls out and arrives
+      // HORIZONTALLY into the chip's inner edge (no vertical end-curl).
+      const d = `M ${centerX} ${y0} C ${centerX} ${chipY}, ${centerX} ${chipY}, ${chipX} ${chipY}`;
+      drawPath(d, 2.1, BOUGH, delay);
+
+      const dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", String(chipX));
+      dot.setAttribute("cy", String(chipY));
+      dot.setAttribute("fill", "var(--aurora)");
+      svg.appendChild(dot);
+
+      const base =
+        side > 0 ? "translate(0,-50%)" : "translate(-100%,-50%)";
+      if (reduce) {
+        dot.setAttribute("r", "3.2");
+        chip.style.opacity = "1";
+        chip.style.transform = base;
+        return;
+      }
+      dot.setAttribute("r", "0");
+      dot.animate([{ r: 0 }, { r: 3.2 }], {
+        duration: 200,
+        delay: delay + BOUGH * 0.82,
+        easing: "ease-out",
+        fill: "forwards",
+      });
+      chip.animate(
+        [
+          { opacity: 0, transform: `${base} scale(.7)` },
+          { opacity: 1, transform: `${base} scale(1.06)`, offset: 0.7 },
+          { opacity: 1, transform: `${base} scale(1)` },
+        ],
+        {
+          duration: 320,
+          delay: delay + BOUGH * 0.84,
+          easing: "cubic-bezier(.2,.8,.3,1.2)",
+          fill: "forwards",
+        }
+      );
+    });
+  }, [branchPanelUri, branchOptions]);
+
   // Branch button + panel, shared by both the custom-card and embed views so
   // the affordance is identical in either mode.
   function branchButton(postUri: string) {
@@ -883,44 +1038,53 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         type="button"
         className={`cur-post-branch${branchPanelUri === postUri ? " active" : ""}`}
         onClick={() => openBranch(postUri)}
-        title="Branch into a new feed"
+        title="Explore from this post"
         aria-expanded={branchPanelUri === postUri}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <circle cx="6" cy="6" r="2.5" />
-          <circle cx="6" cy="18" r="2.5" />
-          <circle cx="18" cy="9" r="2.5" />
-          <path d="M6 8.5v7" />
-          <path d="M6 14c0-3 1.5-5 5-5h4.5" />
+        <svg className="cur-branch-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          {/* a node that diverges into branches; the boughs unfurl on click */}
+          <circle cx="12" cy="5" r="2.2" />
+          <path d="M12 7v4" />
+          <path className="cur-ex-sprout" d="M12 11 C 12 15, 6 14, 5.5 18.5" />
+          <path className="cur-ex-sprout" d="M12 11 V 18.5" />
+          <path className="cur-ex-sprout" d="M12 11 C 12 15, 18 14, 18.5 18.5" />
         </svg>
-        Branch
+        {branchOptionsLoading && branchPanelUri === postUri ? (
+          <>Loading<span className="cur-dots-inline"><span /><span /><span /></span></>
+        ) : (
+          "Explore"
+        )}
       </button>
     );
   }
 
   function branchPanel(postUri: string) {
     if (branchPanelUri !== postUri) return null;
+    // While options load, the Explore button itself shows the loading state —
+    // no separate panel/status until we have directions to show.
+    if (branchOptionsLoading) return null;
     return (
       <div className="cur-branch-panel">
-        {branchOptionsLoading ? (
-          <div className="cur-branch-status">
-            <span className="cur-dots-inline"><span /><span /><span /></span>
-            Finding directions to branch into…
-          </div>
-        ) : branchOptions && branchOptions.length > 0 ? (
+        {branchOptions && branchOptions.length > 0 ? (
           <>
-            <div className="cur-branch-hint">
-              Pick up to {MAX_BRANCH_TOPICS} directions — we&rsquo;ll spin up a new feed.
-            </div>
-            <div className="cur-branch-chips">
+            <div
+              className="cur-branch-tree"
+              ref={branchTreeRef}
+              style={{
+                minHeight:
+                  Math.max(1, Math.ceil(branchOptions.length / 2) - 1) * 92 + 100,
+              }}
+            >
+              <svg className="cur-branch-wires" ref={branchWiresRef} aria-hidden />
               {branchOptions.map((opt, i) => {
                 const checked = branchSelected.has(i);
                 const atCap = !checked && branchSelected.size >= MAX_BRANCH_TOPICS;
+                const side = i % 2 === 0 ? "right" : "left";
                 return (
                   <button
                     key={i}
                     type="button"
-                    className={`cur-branch-chip${checked ? " selected" : ""}`}
+                    className={`cur-branch-chip ${side}${checked ? " selected" : ""}`}
                     data-kind={opt.kind}
                     disabled={atCap || branchCreating}
                     onClick={() => toggleBranchSelect(i)}
@@ -935,6 +1099,9 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </button>
                 );
               })}
+            </div>
+            <div className="cur-branch-hint">
+              Pick up to {MAX_BRANCH_TOPICS} directions — we&rsquo;ll spin up a new feed.
             </div>
             <div className="cur-branch-actions">
               <button
@@ -971,6 +1138,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
             </button>
           </div>
         )}
+      </div>
+    );
+  }
+
+  // The branch zone is just the Explore button + its panel. The tree SVG that
+  // draws the trunk + boughs lives inside the panel's .cur-branch-tree canvas.
+  function branchZone(postUri: string) {
+    return (
+      <div className="cur-branch-zone">
+        <div className="cur-post-branch-row">{branchButton(postUri)}</div>
+        {branchPanel(postUri)}
       </div>
     );
   }
@@ -1125,8 +1303,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                     </div>
                     <BlueskyEmbed uri={post.uri} text={post.text} url={bskyUrl} />
                   </div>
-                    <div className="cur-post-branch-row">{branchButton(post.uri)}</div>
-                    {branchPanel(post.uri)}
+                    {branchZone(post.uri)}
                   </div>
                 );
               })
@@ -1351,8 +1528,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                       )}
                     </footer>
                   </article>
-                    <div className="cur-post-branch-row">{branchButton(post.uri)}</div>
-                    {branchPanel(post.uri)}
+                    {branchZone(post.uri)}
                   </div>
                 );
               })
