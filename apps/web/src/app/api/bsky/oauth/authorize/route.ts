@@ -13,7 +13,7 @@ import { startBskyOAuth, setPendingOAuthUserId } from "@/lib/bsky-oauth";
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
 
-  const { handle } = await req.json();
+  const { handle, returnTo } = await req.json();
   if (!handle || typeof handle !== "string") {
     return NextResponse.json({ error: "handle required" }, { status: 400 });
   }
@@ -22,7 +22,23 @@ export async function POST(req: NextRequest) {
     // Store userId so the state store can persist it alongside the PKCE state
     setPendingOAuthUserId(auth.userId);
     const url = await startBskyOAuth(handle.trim().replace(/^@/, ""));
-    return NextResponse.json({ url });
+    const res = NextResponse.json({ url });
+
+    // Remember where to send the user after the callback. Only same-origin
+    // relative paths are allowed. Always (re)set the cookie so a stale value
+    // from an abandoned flow can't hijack a later connect — absent/invalid
+    // returnTo clears it, and the callback then defaults to /curator.
+    const isSafe =
+      typeof returnTo === "string" &&
+      returnTo.startsWith("/") &&
+      !returnTo.startsWith("//");
+    res.cookies.set("bsky_return_to", isSafe ? returnTo : "", {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: isSafe ? 600 : 0,
+    });
+    return res;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn("[bsky/oauth/authorize] error:", msg);

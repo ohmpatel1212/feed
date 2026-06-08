@@ -8,12 +8,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import IntrospectBackLink from "./IntrospectBackLink";
+import IntrospectGate from "./IntrospectGate";
 
 export default function IntrospectSplash() {
   const router = useRouter();
   const [handleInput, setHandleInput] = useState("");
 
   return (
+    <IntrospectGate>
     <main className="min-h-screen overflow-x-hidden bg-[#fafafa] text-[#1a1a1a]">
       <div className="mx-auto max-w-2xl px-4 py-12 sm:px-6 sm:py-24">
         <IntrospectBackLink />
@@ -21,9 +23,9 @@ export default function IntrospectSplash() {
           introspect
         </h1>
         <p className="mb-8 leading-relaxed text-[#666]">
-          A natural-language self-portrait built from your Bluesky engagements
-          — likes, reposts, quotes, posts, and replies. Public handles only;
-          no sign-in.
+          A natural-language self-portrait built from Bluesky engagements
+          — likes, reposts, quotes, posts, and replies. Introspect any public
+          handle.
         </p>
         <form
           onSubmit={(e) => {
@@ -52,5 +54,6 @@ export default function IntrospectSplash() {
         </form>
       </div>
     </main>
+    </IntrospectGate>
   );
 }

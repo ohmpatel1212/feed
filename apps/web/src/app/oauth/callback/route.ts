@@ -13,6 +13,17 @@ import { query } from "@/lib/pg";
 export async function GET(req: NextRequest) {
   const base = process.env.NEXT_PUBLIC_URL || req.nextUrl.origin;
 
+  // Where to send the user after linking. Set by /api/bsky/oauth/authorize
+  // (a same-origin relative path); defaults to the curator. The cookie is
+  // cleared on the redirect either way.
+  const rawReturn = req.cookies.get("bsky_return_to")?.value;
+  const returnTo =
+    rawReturn && rawReturn.startsWith("/") && !rawReturn.startsWith("//")
+      ? rawReturn
+      : "/curator";
+  const dest = (params: string) =>
+    `${base}${returnTo}${returnTo.includes("?") ? "&" : "?"}${params}`;
+
   try {
     const params = req.nextUrl.searchParams;
     const stateKey = params.get("state");
@@ -68,7 +79,7 @@ export async function GET(req: NextRequest) {
 
     console.log("[oauth/callback] restoring session_id:", originalSessionId);
 
-    const response = NextResponse.redirect(`${base}/curator?bsky_connected=1`);
+    const response = NextResponse.redirect(dest("bsky_connected=1"));
     if (originalSessionId) {
       response.cookies.set("sid", originalSessionId, {
         httpOnly: true,
@@ -77,12 +88,15 @@ export async function GET(req: NextRequest) {
         maxAge: 60 * 60 * 24 * 365,
       });
     }
+    response.cookies.set("bsky_return_to", "", { path: "/", maxAge: 0 });
     return response;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[oauth/callback] error:", msg);
-    return NextResponse.redirect(
-      `${base}/curator?bsky_error=${encodeURIComponent(msg)}`
+    const response = NextResponse.redirect(
+      dest(`bsky_error=${encodeURIComponent(msg)}`)
     );
+    response.cookies.set("bsky_return_to", "", { path: "/", maxAge: 0 });
+    return response;
   }
 }

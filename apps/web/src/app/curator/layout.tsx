@@ -680,16 +680,16 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
                   <span className="cur-topbar-btn-text">Introspect my engagements</span>
                 </Link>
               ) : (
-                <Link
-                  href="/introspect"
+                <button
+                  type="button"
                   className="cur-topbar-btn ghost"
-                  prefetch={false}
-                  title="Introspect a Bluesky handle"
-                  aria-label="Introspect a Bluesky handle"
+                  onClick={() => setShowBskyConnect(true)}
+                  title="Connect Bluesky to introspect your engagements"
+                  aria-label="Connect Bluesky to introspect your engagements"
                 >
                   <span aria-hidden>✦</span>
-                  <span className="cur-topbar-btn-text">Introspect a handle</span>
-                </Link>
+                  <span className="cur-topbar-btn-text">Introspect my engagements</span>
+                </button>
               )}
               {activeFeed && activeHasCriteria && (
                 <button
