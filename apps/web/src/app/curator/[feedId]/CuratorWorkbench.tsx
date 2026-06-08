@@ -1071,8 +1071,11 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               className="cur-branch-tree"
               ref={branchTreeRef}
               style={{
-                minHeight:
-                  Math.max(1, Math.ceil(branchOptions.length / 2) - 1) * 92 + 100,
+                // Pre-layout reservation only — the trace effect sets the exact
+                // height once chips are measured (see branchTreeRef effect). Keep
+                // this at/below the single-line content height so it never adds
+                // dead space below the chips before the button.
+                minHeight: Math.ceil(branchOptions.length / 2) * 62 + 14,
               }}
             >
               <svg className="cur-branch-wires" ref={branchWiresRef} aria-hidden />
@@ -1099,9 +1102,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </button>
                 );
               })}
-            </div>
-            <div className="cur-branch-hint">
-              Pick up to {MAX_BRANCH_TOPICS} directions — we&rsquo;ll spin up a new feed.
             </div>
             <div className="cur-branch-actions">
               <button
