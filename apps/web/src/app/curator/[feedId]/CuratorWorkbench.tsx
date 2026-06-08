@@ -614,13 +614,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     patchFeed({ rerank_thinking_enabled: v });
 
 
-  const loadChat = useCallback(async (id: number) => {
+  const loadChat = useCallback(async (id: number): Promise<{
+    sourcePost: ChatSourcePost | null;
+    messages: Message[];
+  }> => {
     setChatLoading(true);
     try {
       const res = await authedFetch(`/api/chat?feedId=${id}`);
       const data = await res.json();
       const msgs: Message[] = data.messages || [];
-      setSourcePost(data.sourcePost ?? null);
+      const src: ChatSourcePost | null = data.sourcePost ?? null;
+      setSourcePost(src);
       const f = data.feed;
       if (f) {
         if (Array.isArray(f.subqueries)) setSubqueries(f.subqueries);
@@ -636,8 +640,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         feedSignatureRef.current = feedSignature(f);
       }
       setMessages(msgs);
-    } catch { /* ignore */ }
-    finally {
+      return { sourcePost: src, messages: msgs };
+    } catch {
+      return { sourcePost: null, messages: [] };
+    } finally {
       setChatLoading(false);
     }
   }, []);
@@ -755,9 +761,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   // Deferred a tick so the fetch kickoff (which flips loading flags) runs
   // outside the synchronous effect body, avoiding a cascading render.
   useEffect(() => {
-    const t = setTimeout(() => {
-      loadChat(feedId);
-      loadPosts(feedId);
+    const t = setTimeout(async () => {
+      const chat = await loadChat(feedId);
+      // A freshly-branched feed (has a source post but no chat yet) loads its
+      // posts via the branch-init turn (see branchInit), which first writes the
+      // rerank prompt and only then queries. Firing loadPosts here too would
+      // run the pipeline prematurely — before the rerank prompt exists — and
+      // pre-populate feed_result_cache, so the branch-init reload gets served a
+      // stale, non-reranked cached result instead of recomputing. Skip it and
+      // let branchInit own the first load.
+      const isFreshBranch = !!chat.sourcePost && chat.messages.length === 0;
+      if (!isFreshBranch) loadPosts(feedId);
     }, 0);
     return () => clearTimeout(t);
   }, [feedId, loadChat, loadPosts]);
@@ -950,11 +964,16 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         if (typeof f.rerank_prompt === "string") setRerankPrompt(f.rerank_prompt);
         feedSignatureRef.current = feedSignature(f);
         reloadFeeds(); // the agent renamed the feed → refresh the sidebar
-        // The rerank prompt now exists → re-query so the feed is reranked.
-        loadPosts(feedId);
       }
     } catch { /* ignore — user can still chat normally */ }
-    finally { setLoading(false); }
+    finally {
+      setLoading(false);
+      // branchInit owns the first post load for a branched feed (the mount
+      // effect deliberately skips it). Run it here — after the rerank prompt is
+      // written above — so the query reflects the final config, and run it even
+      // if the turn failed so the feed isn't left empty.
+      loadPosts(feedId);
+    }
   }, [feedId, reloadFeeds, loadPosts]);
 
   useEffect(() => {
