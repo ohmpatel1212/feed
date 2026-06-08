@@ -322,6 +322,59 @@ export async function getFeedByRkey(rkey: string): Promise<DbFeed | null> {
   return res.rows[0] ? rowToFeed(res.rows[0]) : null;
 }
 
+export async function getPublishedFeed(
+  rkey: string,
+  publisherDid?: string
+): Promise<DbFeed | null> {
+  if (publisherDid) {
+    const res = await query(
+      `SELECT f.* FROM feeds f
+       JOIN users u ON u.id = f.user_id
+       WHERE f.published_rkey = $1 AND u.bluesky_did = $2`,
+      [rkey, publisherDid]
+    );
+    return res.rows[0] ? rowToFeed(res.rows[0]) : null;
+  }
+  return getFeedByRkey(rkey);
+}
+
+export interface PublishedFeedEntry {
+  feed: DbFeed;
+  publisher_did: string;
+}
+
+export async function getPublishedFeedsWithPublisher(): Promise<PublishedFeedEntry[]> {
+  const res = await query(
+    `SELECT f.*, u.bluesky_did AS publisher_did
+     FROM feeds f
+     JOIN users u ON u.id = f.user_id
+     WHERE f.published_rkey IS NOT NULL
+       AND u.bluesky_did IS NOT NULL
+     ORDER BY f.updated_at DESC`
+  );
+  return res.rows.map((row) => ({
+    feed: rowToFeed(row),
+    publisher_did: row.publisher_did as string,
+  }));
+}
+
+/** Posts for the public feed skeleton xrpc (uses preview pipeline + cache). */
+export async function getFeedSkeletonPosts(
+  feedId: number,
+  limit: number,
+  cursor?: string
+): Promise<{ uri: string; indexed_at: string }[]> {
+  const posts = await getFeedPreviewPosts(feedId, 100);
+  let filtered = posts;
+  if (cursor) {
+    filtered = posts.filter((p) => p.indexed_at < cursor);
+  }
+  return filtered.slice(0, limit).map((p) => ({
+    uri: p.uri,
+    indexed_at: p.indexed_at,
+  }));
+}
+
 export async function getActiveFeeds(): Promise<DbFeed[]> {
   const res = await query(
     "SELECT * FROM feeds WHERE is_active = true ORDER BY id"

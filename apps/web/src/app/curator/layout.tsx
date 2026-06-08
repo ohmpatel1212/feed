@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { UserProfile } from "@/lib/types";
 import FeedbackModal from "@/components/FeedbackModal";
+import PublishFeedModal from "@/components/PublishFeedModal";
 import FeedSearch from "@/components/FeedSearch";
 import ShaderLogo from "@/components/ShaderLogo";
 import { authedFetch } from "@/lib/authed-fetch";
@@ -123,6 +124,7 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
   const [feeds, setFeeds] = useState<SavedFeed[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showPublish, setShowPublish] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [showBskyConnect, setShowBskyConnect] = useState(false);
   const [bskyHandle, setBskyHandle] = useState("");
@@ -692,7 +694,7 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
               {activeFeed && activeHasCriteria && (
                 <button
                   className="cur-topbar-btn publish"
-                  onClick={() => { /* TODO: wire up publish-to-Bluesky flow */ }}
+                  onClick={() => setShowPublish(true)}
                   title="Publish this feed to Bluesky"
                   aria-label="Publish this feed to Bluesky"
                 >
@@ -846,6 +848,20 @@ function CuratorShell({ profile, children }: { profile: UserProfile; children: R
             onClose={() => setShowFeedback(false)}
             feedId={activeFeed ? Number(activeFeed.id) : null}
             feedName={activeFeed?.name ?? null}
+          />
+        )}
+
+        {showPublish && activeFeed && (
+          <PublishFeedModal
+            onClose={() => setShowPublish(false)}
+            blueskyHandle={profile.blueskyHandle}
+            blueskyDid={profile.blueskyDid}
+            feedName={activeFeed.name}
+            feedId={Number(activeFeed.id)}
+            onConnectBluesky={() => {
+              setShowPublish(false);
+              setShowBskyConnect(true);
+            }}
           />
         )}
 
