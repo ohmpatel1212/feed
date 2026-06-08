@@ -178,3 +178,23 @@ export async function restoreBskySession(did: string) {
   const client = getBskyOAuthClient();
   return client.restore(did);
 }
+
+/** Whether we have stored OAuth tokens for this DID (may still need refresh). */
+export async function hasBskyOAuthSession(did: string): Promise<boolean> {
+  const res = await query(
+    `SELECT 1 FROM bsky_oauth_session WHERE did = $1 LIMIT 1`,
+    [did]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/** True when stored OAuth tokens exist and restore succeeds (refresh if needed). */
+export async function canRestoreBskySession(did: string): Promise<boolean> {
+  if (!(await hasBskyOAuthSession(did))) return false;
+  try {
+    await restoreBskySession(did);
+    return true;
+  } catch {
+    return false;
+  }
+}
