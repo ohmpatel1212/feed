@@ -207,6 +207,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     showDebug,
     hideUnavailable,
     setUnavailableCount,
+    openPublish,
   } = useCurator();
 
   const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
@@ -1681,6 +1682,31 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </div>
                 );
               })
+            )}
+            {posts.length > 0 && !postsLoading && (
+              <div className="cur-feed-end-prompt">
+                <p className="cur-feed-end-title">You&rsquo;ve reached the end</p>
+                <p className="cur-feed-end-sub">Like what you see? Take your feed to Bluesky.</p>
+                <div className="cur-feed-end-actions">
+                  <button
+                    type="button"
+                    className="cur-feed-end-btn cur-feed-end-publish"
+                    onClick={openPublish}
+                  >
+                    Publish to Bluesky
+                  </button>
+                  <button
+                    type="button"
+                    className="cur-feed-end-btn cur-feed-end-refresh"
+                    onClick={() => {
+                      document.querySelector('.cur-feed-posts')?.scrollTo({ top: 0 });
+                      setTimeout(() => loadPosts(feedId, { force: true }), 50);
+                    }}
+                  >
+                    Refresh feed
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>
