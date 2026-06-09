@@ -313,6 +313,7 @@ function CuratorShell({
         setHideUnavailable,
         unavailableCount,
         setUnavailableCount,
+        openPublish: () => setShowPublish(true),
       }}
     >
       <div className="curator-shell">
