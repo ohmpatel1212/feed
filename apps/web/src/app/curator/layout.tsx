@@ -4,8 +4,6 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import "./curator.css";
-import "./onboarding.css";
-import "./onboarding-flow.css";
 import "./tour.css";
 import CuratorTour from "./CuratorTour";
 import {

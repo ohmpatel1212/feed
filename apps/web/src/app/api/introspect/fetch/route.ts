@@ -19,6 +19,7 @@ import { computeStats } from "@/lib/introspect/stats";
 import { composeBatches } from "@/lib/introspect/batches";
 import { readSnapshot, writeSnapshot } from "@/lib/introspect/storage";
 import type { Snapshot } from "@/lib/introspect/types";
+import { jsonError } from "@/lib/api";
 
 export const runtime = "nodejs";
 // PDS + AppView fetches can take 8–15s on a cold cache.
@@ -108,8 +109,6 @@ export async function POST(req: NextRequest) {
       unavailableCount: unavailableUris.length,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "unknown error";
-    console.error(`[introspect.fetch] handle=${handleInput} failed:`, err);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return jsonError(err, `introspect.fetch handle=${handleInput}`);
   }
 }

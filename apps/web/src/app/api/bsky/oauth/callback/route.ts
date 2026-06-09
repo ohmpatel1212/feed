@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { handleBskyOAuthCallback } from "@/lib/bsky-oauth";
 import { query } from "@/lib/pg";
+import { jsonError } from "@/lib/api";
 
 /**
  * POST /api/bsky/oauth/callback
@@ -42,8 +43,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, did, handle });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn("[bsky/oauth/callback] error:", msg);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return jsonError(e, "bsky/oauth/callback");
   }
 }
