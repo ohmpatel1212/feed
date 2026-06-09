@@ -234,16 +234,33 @@ export default function LandingPageV2() {
             transition={{ duration: 1, ease: "easeOut" }}
             className="hero-title"
           >
-            A feed you <span className="it">actually</span> choose.
+            Transparency into <span className="it">your</span> feed.
           </motion.h1>
-          <motion.p
-            initial={{ opacity: 0, y: -40 }}
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 1, ease: "easeOut", delay: 0.3 }}
-            className="hero-sub hero-sub--centered">
-            In the same way you <em>curate what you eat</em>, you must curate what you consume online to stay healthy.
-            We&apos;re building the tools to help you do that.
-          </motion.p>
+            className="hero-pillars"
+          >
+            <div className="hero-pillar">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className="hero-pillar-icon" src="/images/pillars/feed-curation.png" alt="" aria-hidden="true" />
+              <span className="hero-pillar-label">Feed curation</span>
+              <span className="hero-pillar-sub">Choose your feed</span>
+            </div>
+            <div className="hero-pillar">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className="hero-pillar-icon" src="/images/pillars/user-identification.png" alt="" aria-hidden="true" />
+              <span className="hero-pillar-label">User identification</span>
+              <span className="hero-pillar-sub">See who&apos;s real</span>
+            </div>
+            <div className="hero-pillar">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img className="hero-pillar-icon" src="/images/pillars/content-validation.png" alt="" aria-hidden="true" />
+              <span className="hero-pillar-label">Content validation</span>
+              <span className="hero-pillar-sub">See what&apos;s true</span>
+            </div>
+          </motion.div>
           <p className="hero-waitlist-label">Join the Waitlist</p>
           <div className="hero-waitlist-form">
             <SubscribeForm />
