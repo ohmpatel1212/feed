@@ -81,6 +81,29 @@ gcloud run deploy jetstream-indexer \
 
 The worker needs `--no-cpu-throttling` (long-lived WebSocket to Jetstream) and `concurrency=1` (single writer — prevents races on the per-consumer cursors in `bsky.consumer_state`).
 
+## Rate limiting & cost controls
+
+The demo is public and unauthenticated, so the paid LLM / embedding / Hive routes are rate-limited **per client IP**. Implemented in `apps/web/src/lib/rate-limit.ts` as an **in-memory fixed-window limiter** — correct because `feed-web` is pinned at `min=max=1` (one process ⇒ one global counter). If you ever raise max instances, move this to shared state (Postgres/Redis) or Cloud Armor, or the limit multiplies per instance.
+
+Keyed on the client IP (rightmost `X-Forwarded-For` entry). Over-limit requests get `429` + a `Retry-After` header; the client shows a calm "Easy there" toast (`ServerErrorToast`) instead of an error.
+
+| Tier | Limits (per IP) | Routes |
+|---|---|---|
+| `LLM_RULES` | 20/min, 300/day | `/api/chat`, `/api/search`, `/api/import-memory`, `/api/branch/options`, `/api/feed-preview/stream` |
+| `EXPENSIVE_RULES` | 6/min, 40/hr, 80/day | `/api/introspect/fetch`, `/api/introspect/process-batch` (multi-call / heavy fan-out) |
+| `HIVE_RULES` | 100/min, 1000/hr, 4000/day | `/api/ai-label` (fires one request per image-bearing post on every feed load) |
+
+**Bypass / tuning** (env vars on the `feed-web` service):
+
+- `RATE_LIMIT_DISABLED=1` — disable the limiter entirely (use on a dev/staging deploy).
+- `RATE_LIMIT_ALLOW_IPS=ip1,ip2,…` — IPs that skip the limiter. The office IP `64.125.53.231` is built in.
+
+**Input caps:** chat message ≤ 4000 chars, search query ≤ 1000 chars, memory import ≤ 8000 chars.
+
+**These limits are not the bill ceiling.** They blunt scripted abuse; the hard guarantee is provider-side and must be set separately: an **Anthropic** monthly spend limit, a **GCP** billing budget + **Vertex AI** request quota, and a **Hive** usage cap.
+
+> `/api/ai-label` results are cached per image URL in feed-db (`ai_image_labels`, `sql/008`) — Bluesky image URLs are content-addressed, so each unique image hits the paid Hive API at most once. Hive itself is dormant until a `hive-api-key` secret is configured.
+
 ## Monitoring
 
 Cloud Monitoring dashboard for the indexer (flush rate, cursor lag, embed cost, QPS): <https://console.cloud.google.com/monitoring/dashboards/builder/781a3b9f-7c30-4eed-82bd-61fa79964612?project=timelines-492720>
