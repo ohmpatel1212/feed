@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { UserProfile } from "@/lib/types";
 import FeedbackModal from "@/components/FeedbackModal";
+import EditableFeedName from "@/components/EditableFeedName";
 import PublishFeedModal from "@/components/PublishFeedModal";
 import FeedSearch from "@/components/FeedSearch";
 import ShaderLogo from "@/components/ShaderLogo";
@@ -145,29 +146,31 @@ function CuratorShell({
 
   // Display settings (persisted to localStorage), surfaced in the top-bar
   // settings dialog and consumed by the posts pane in CuratorWorkbench.
-  const [viewMode, setViewModeState] = useState<ViewMode>(() => {
-    if (typeof window === "undefined") return "card";
-    return window.localStorage.getItem(VIEW_MODE_KEY) === "embed" ? "embed" : "card";
-  });
+  // Initialized to the SSR defaults and hydrated from localStorage in an effect
+  // after mount (below) — reading localStorage in the initializer makes the
+  // first client render disagree with the server HTML → hydration mismatch.
+  const [viewMode, setViewModeState] = useState<ViewMode>("card");
   const setViewMode = useCallback((next: ViewMode) => {
     setViewModeState(next);
     try { window.localStorage.setItem(VIEW_MODE_KEY, next); } catch { /* ignore */ }
   }, []);
-  const [showDebug, setShowDebugState] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(SHOW_DEBUG_KEY) !== "false";
-  });
+  const [showDebug, setShowDebugState] = useState<boolean>(true);
   const setShowDebug = useCallback((next: boolean) => {
     setShowDebugState(next);
     try { window.localStorage.setItem(SHOW_DEBUG_KEY, String(next)); } catch { /* ignore */ }
   }, []);
-  const [hideUnavailable, setHideUnavailableState] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return window.localStorage.getItem(HIDE_UNAVAIL_KEY) !== "false";
-  });
+  const [hideUnavailable, setHideUnavailableState] = useState<boolean>(true);
   const setHideUnavailable = useCallback((next: boolean) => {
     setHideUnavailableState(next);
     try { window.localStorage.setItem(HIDE_UNAVAIL_KEY, String(next)); } catch { /* ignore */ }
+  }, []);
+  // Hydrate display settings from localStorage once mounted (client-only).
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(VIEW_MODE_KEY) === "embed") setViewModeState("embed");
+      if (window.localStorage.getItem(SHOW_DEBUG_KEY) === "false") setShowDebugState(false);
+      if (window.localStorage.getItem(HIDE_UNAVAIL_KEY) === "false") setHideUnavailableState(false);
+    } catch { /* ignore */ }
   }, []);
   const [unavailableCount, setUnavailableCount] = useState(0);
 
@@ -192,6 +195,10 @@ function CuratorShell({
     } catch {
       /* ignore */
     }
+  }, []);
+
+  const renameFeed = useCallback((feedId: string, name: string) => {
+    setFeeds((prev) => prev.map((f) => (f.id === feedId ? { ...f, name } : f)));
   }, []);
 
   useEffect(() => { reloadFeeds(); }, [reloadFeeds, profile.uid]);
@@ -304,6 +311,7 @@ function CuratorShell({
         setHideUnavailable,
         unavailableCount,
         setUnavailableCount,
+        openPublish: () => setShowPublish(true),
       }}
     >
       <div className="curator-shell">
@@ -344,7 +352,13 @@ function CuratorShell({
                 >
                   <span className="swatch" style={{ background: feed.color }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="fi-name">{feed.name}</div>
+                    <EditableFeedName
+                      feedId={feed.id}
+                      name={feed.name}
+                      variant="sidebar"
+                      className="fi-name"
+                      onRenamed={(name) => renameFeed(feed.id, name)}
+                    />
                     <div className="fi-sub">
                       {!isComplete
                         ? "drafting · resume chat"
@@ -375,7 +389,7 @@ function CuratorShell({
                   fontFamily: "var(--rf-body)",
                   fontSize: 13,
                   color: "var(--sage)",
-                  fontStyle: "italic",
+                  fontStyle: "normal",
                 }}
               >
                 No feeds yet — create your first one.
@@ -688,7 +702,18 @@ function CuratorShell({
               </svg>
             </button>
             <div className="cur-topbar-left">
-              <h2>{activeFeed?.name || "Curate a feed"}</h2>
+              {activeFeed ? (
+                <h2>
+                  <EditableFeedName
+                    feedId={activeFeed.id}
+                    name={activeFeed.name}
+                    variant="topbar"
+                    onRenamed={(name) => renameFeed(activeFeed.id, name)}
+                  />
+                </h2>
+              ) : (
+                <h2>Curate a feed</h2>
+              )}
               {activeHasCriteria && <span className="live-badge">live</span>}
             </div>
             <div className="cur-topbar-right">

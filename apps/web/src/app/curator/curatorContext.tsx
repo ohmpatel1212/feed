@@ -39,6 +39,7 @@ export interface CuratorContextValue {
   // mirrored up from the workbench so the settings dialog can show it.
   unavailableCount: number;
   setUnavailableCount: (n: number) => void;
+  openPublish: () => void;
 }
 
 const CuratorContext = createContext<CuratorContextValue | null>(null);

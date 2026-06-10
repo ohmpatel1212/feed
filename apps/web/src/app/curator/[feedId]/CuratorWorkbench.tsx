@@ -207,6 +207,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     showDebug,
     hideUnavailable,
     setUnavailableCount,
+    openPublish,
   } = useCurator();
 
   const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
@@ -515,6 +516,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   }
 
   const [postsLoading, setPostsLoading] = useState(false);
+  // Set true when a chat message is sent while posts are on screen, so we can
+  // fade the feed to signal it's changing; cleared once posts finish loading
+  // (or when the turn ends without triggering a re-query).
+  const [feedRefreshing, setFeedRefreshing] = useState(false);
   const [pipelineStage, setPipelineStage] = useState<PipelineStage>("idle");
   const [pipelineCandidates, setPipelineCandidates] = useState<number | undefined>(undefined);
   const [pipelineHits, setPipelineHits] = useState<number | undefined>(undefined);
@@ -614,13 +619,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     patchFeed({ rerank_thinking_enabled: v });
 
 
-  const loadChat = useCallback(async (id: number) => {
+  const loadChat = useCallback(async (id: number): Promise<{
+    sourcePost: ChatSourcePost | null;
+    messages: Message[];
+  }> => {
     setChatLoading(true);
     try {
       const res = await authedFetch(`/api/chat?feedId=${id}`);
       const data = await res.json();
       const msgs: Message[] = data.messages || [];
-      setSourcePost(data.sourcePost ?? null);
+      const src: ChatSourcePost | null = data.sourcePost ?? null;
+      setSourcePost(src);
       const f = data.feed;
       if (f) {
         if (Array.isArray(f.subqueries)) setSubqueries(f.subqueries);
@@ -636,8 +645,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         feedSignatureRef.current = feedSignature(f);
       }
       setMessages(msgs);
-    } catch { /* ignore */ }
-    finally {
+      return { sourcePost: src, messages: msgs };
+    } catch {
+      return { sourcePost: null, messages: [] };
+    } finally {
       setChatLoading(false);
     }
   }, []);
@@ -748,6 +759,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     } catch { /* ignore */ }
     finally {
       setPostsLoading(false);
+      setFeedRefreshing(false);
     }
   }, [setActivePostCount]);
 
@@ -755,9 +767,17 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   // Deferred a tick so the fetch kickoff (which flips loading flags) runs
   // outside the synchronous effect body, avoiding a cascading render.
   useEffect(() => {
-    const t = setTimeout(() => {
-      loadChat(feedId);
-      loadPosts(feedId);
+    const t = setTimeout(async () => {
+      const chat = await loadChat(feedId);
+      // A freshly-branched feed (has a source post but no chat yet) loads its
+      // posts via the branch-init turn (see branchInit), which first writes the
+      // rerank prompt and only then queries. Firing loadPosts here too would
+      // run the pipeline prematurely — before the rerank prompt exists — and
+      // pre-populate feed_result_cache, so the branch-init reload gets served a
+      // stale, non-reranked cached result instead of recomputing. Skip it and
+      // let branchInit own the first load.
+      const isFreshBranch = !!chat.sourcePost && chat.messages.length === 0;
+      if (!isFreshBranch) loadPosts(feedId);
     }, 0);
     return () => clearTimeout(t);
   }, [feedId, loadChat, loadPosts]);
@@ -842,6 +862,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     setSelectedOptions(new Set());
     setMessages(prev => [...prev, { role: "user", content: text.trim() }]);
     setLoading(true);
+    // Fade the current feed to signal it may be changing. Only when posts are
+    // actually on screen; cleared on posts load (or below if no re-query fires).
+    if (posts.length > 0) setFeedRefreshing(true);
+    let willReload = false;
     const interview = interviewModeRef.current;
     // Interview flag is consumed once: after a single nudged turn, the model
     // picks up the question/options pattern from history on its own.
@@ -871,6 +895,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           if (subsChanged) reloadFeeds();
           if (postsDebounceRef.current) clearTimeout(postsDebounceRef.current);
           postsDebounceRef.current = setTimeout(() => loadPosts(feedId), 600);
+          willReload = true;
         }
       }
       const last = msgs[msgs.length - 1];
@@ -880,10 +905,15 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
       if (d.done) {
         loadPosts(feedId);
         reloadFeeds();
+        willReload = true;
       }
     } catch {
       setMessages(prev => [...prev, { role: "assistant", content: "Something went wrong." }]);
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+      // No re-query was triggered → nothing will clear the fade, so do it here.
+      if (!willReload) setFeedRefreshing(false);
+    }
   }
 
   // Cancel any pending debounce on unmount so a stale timer doesn't fire
@@ -950,11 +980,16 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         if (typeof f.rerank_prompt === "string") setRerankPrompt(f.rerank_prompt);
         feedSignatureRef.current = feedSignature(f);
         reloadFeeds(); // the agent renamed the feed → refresh the sidebar
-        // The rerank prompt now exists → re-query so the feed is reranked.
-        loadPosts(feedId);
       }
     } catch { /* ignore — user can still chat normally */ }
-    finally { setLoading(false); }
+    finally {
+      setLoading(false);
+      // branchInit owns the first post load for a branched feed (the mount
+      // effect deliberately skips it). Run it here — after the rerank prompt is
+      // written above — so the query reflects the final config, and run it even
+      // if the turn failed so the feed isn't left empty.
+      loadPosts(feedId);
+    }
   }, [feedId, reloadFeeds, loadPosts]);
 
   useEffect(() => {
@@ -1358,7 +1393,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
               </button>
             </div>
           </div>
-          <div className="cur-feed-posts-inner">
+          <div className={`cur-feed-posts-inner${feedRefreshing ? " refreshing" : ""}`}>
             {posts.length === 0 ? (
               <div className="cur-empty">
                 {postsLoading ? (
@@ -1647,6 +1682,31 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
                   </div>
                 );
               })
+            )}
+            {posts.length > 0 && !postsLoading && (
+              <div className="cur-feed-end-prompt">
+                <p className="cur-feed-end-title">You&rsquo;ve reached the end</p>
+                <p className="cur-feed-end-sub">Like what you see? Take your feed to Bluesky.</p>
+                <div className="cur-feed-end-actions">
+                  <button
+                    type="button"
+                    className="cur-feed-end-btn cur-feed-end-publish"
+                    onClick={openPublish}
+                  >
+                    Publish to Bluesky
+                  </button>
+                  <button
+                    type="button"
+                    className="cur-feed-end-btn cur-feed-end-refresh"
+                    onClick={() => {
+                      document.querySelector('.cur-feed-posts')?.scrollTo({ top: 0 });
+                      setTimeout(() => loadPosts(feedId, { force: true }), 50);
+                    }}
+                  >
+                    Refresh feed
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { handleBskyOAuthCallback, getOAuthStateUserId } from "@/lib/bsky-oauth";
-import { query } from "@/lib/pg";
+import { handleBskyOAuthCallback, getOAuthStateContext } from "@/lib/bsky-oauth";
+import { linkBlueskyAccount } from "@/lib/link-bluesky";
+import { SESSION_COOKIE } from "@/lib/session";
 
 /**
  * GET /oauth/callback?state=...&iss=...&code=...
@@ -32,12 +33,25 @@ export async function GET(req: NextRequest) {
       throw new Error("Missing state parameter");
     }
 
-    // Look up the userId from the state table BEFORE the callback consumes it
-    const userId = await getOAuthStateUserId(stateKey);
-    console.log("[oauth/callback] state:", stateKey, "userId from state table:", userId);
+    const { userId, sessionId: storedSessionId } =
+      await getOAuthStateContext(stateKey);
+    console.log(
+      "[oauth/callback] state:",
+      stateKey,
+      "userId:",
+      userId,
+      "sessionId:",
+      storedSessionId
+    );
 
     if (!userId) {
       throw new Error("OAuth session expired — please try connecting again.");
+    }
+
+    const sessionId =
+      storedSessionId ?? req.cookies.get(SESSION_COOKIE)?.value ?? null;
+    if (!sessionId) {
+      throw new Error("Missing browser session — please try connecting again.");
     }
 
     // Exchange the authorization code for tokens (this consumes the state)
@@ -62,32 +76,22 @@ export async function GET(req: NextRequest) {
 
     console.log("[oauth/callback] resolved handle:", handle);
 
-    // Link Bluesky DID + handle to the original user
-    await query(
-      `UPDATE users SET bluesky_did = $1, bluesky_handle = $2, name = COALESCE(NULLIF(name, 'Anonymous'), $2), updated_at = now() WHERE id = $3`,
-      [did, handle ?? null, userId]
-    );
+    const { userId: canonicalUserId } = await linkBlueskyAccount({
+      sessionId,
+      oauthUserId: userId,
+      did,
+      handle: handle ?? null,
+    });
 
-    // Restore the original session cookie so the browser picks up the
-    // correct user on the redirect — crucial when cookies were stripped
-    // during the cross-site redirect (incognito, strict privacy settings).
-    const originalUser = await query(
-      `SELECT session_id FROM users WHERE id = $1`,
-      [userId]
-    );
-    const originalSessionId = originalUser.rows[0]?.session_id;
-
-    console.log("[oauth/callback] restoring session_id:", originalSessionId);
+    console.log("[oauth/callback] linked user:", canonicalUserId);
 
     const response = NextResponse.redirect(dest("bsky_connected=1"));
-    if (originalSessionId) {
-      response.cookies.set("sid", originalSessionId, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 365,
-      });
-    }
+    response.cookies.set(SESSION_COOKIE, sessionId, {
+      httpOnly: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 365,
+    });
     response.cookies.set("bsky_return_to", "", { path: "/", maxAge: 0 });
     return response;
   } catch (e) {

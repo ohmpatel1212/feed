@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { startBskyOAuth, setPendingOAuthUserId } from "@/lib/bsky-oauth";
+import {
+  startBskyOAuth,
+  setPendingOAuthUserId,
+  setPendingOAuthSessionId,
+} from "@/lib/bsky-oauth";
+import { SESSION_COOKIE } from "@/lib/session";
 import { jsonError } from "@/lib/api";
 
 /**
@@ -20,8 +25,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Store userId so the state store can persist it alongside the PKCE state
+    // Store userId + browser session so the callback can link the DID and
+    // restore the correct cookie after the cross-site redirect.
     setPendingOAuthUserId(auth.userId);
+    const sessionId = req.cookies.get(SESSION_COOKIE)?.value;
+    if (sessionId) setPendingOAuthSessionId(sessionId);
     const url = await startBskyOAuth(handle.trim().replace(/^@/, ""));
     const res = NextResponse.json({ url });
 
