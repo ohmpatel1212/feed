@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { requireAuth, isAuthError } from "@/lib/auth";
 import { getFeedForUser } from "@/lib/pg";
+import { jsonError } from "@/lib/api";
 import { hydratePostByUri } from "@/lib/vector-search";
 import { ensureEnvFromSecret } from "@/lib/secrets";
 import { composeSourcePostText, type BranchOption } from "@/lib/branch";
@@ -130,9 +131,7 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json({ options });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Internal error";
-    console.error("Branch options API error:", e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (e) {
+    return jsonError(e, "branch/options");
   }
 }
