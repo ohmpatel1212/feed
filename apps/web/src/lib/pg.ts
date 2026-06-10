@@ -11,6 +11,7 @@
 //   subscribers     — landing-page mailing list
 //   rerank-prompts  — saved reranker prompts + versions (/search)
 //   search-runs     — search run telemetry (/search)
+//   ai-labels       — Hive AI-image-label cache (ai_image_labels)
 //
 // Filter translation (MechanicalFilters → SearchFilter) is feed-config domain
 // logic and lives in ./db/filters; it is intentionally not part of this
@@ -25,3 +26,4 @@ export * from "./db/feedback";
 export * from "./db/subscribers";
 export * from "./db/rerank-prompts";
 export * from "./db/search-runs";
+export * from "./db/ai-labels";

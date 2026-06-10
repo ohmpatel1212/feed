@@ -14,6 +14,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { enforceRateLimit, EXPENSIVE_RULES } from "@/lib/rate-limit";
 import { fetchEngagements } from "@/lib/introspect/fetch-engagements";
 import { computeStats } from "@/lib/introspect/stats";
 import { composeBatches } from "@/lib/introspect/batches";
@@ -26,6 +27,8 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
+  const limited = enforceRateLimit(req, "introspect-fetch", EXPENSIVE_RULES);
+  if (limited) return limited;
   const t0 = performance.now();
   let body: { handle?: string; force?: boolean };
   try {
