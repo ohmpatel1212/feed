@@ -41,7 +41,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 110px 0 120px;
+  /* heavier bottom padding floats the content above true center */
+  padding: 80px 0 170px;
   /* flat wheat; .fly-section's top edge fades in from this same color */
   background: var(--p-wheat);
   text-align: center;
@@ -75,7 +76,7 @@
 
 .lv-title {
   font-family: var(--rf-display);
-  font-size: clamp(36px, 5.6vw, 68px);
+  font-size: clamp(48px, 7.2vw, 92px);
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1.06;
@@ -85,12 +86,12 @@
 
 .lv-subtitle {
   font-family: var(--rf-display);
-  font-size: clamp(24px, 3.4vw, 42px);
+  font-size: clamp(28px, 4.2vw, 54px);
   font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 1.2;
   color: var(--p-ink);
-  margin-bottom: 64px;
+  margin-bottom: 88px;
 }
 
 .lv-title em,
@@ -212,10 +213,8 @@
 }
 
 .lv-pillar-sub {
-  font-family: var(--rf-mono);
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-family: var(--rf-body);
+  font-size: 13.5px;
   color: var(--p-ink-dim);
 }
 
@@ -264,6 +263,12 @@
   padding: 12px 22px;
   cursor: pointer;
   transition: background 0.25s ease;
+}
+
+/* mobile-only variant of the demo CTA, hidden on desktop */
+.lv-demo-top {
+  display: none;
+  position: absolute;
 }
 
 /* small screens: tighter hero so it fits one viewport; pill spans the
@@ -316,8 +321,18 @@
     gap: 16px;
   }
 
+  /* demo CTA moves to the hero's top-right, opposite the navbar brand */
   .lv-cta-row .lv-demo-btn {
-    order: -1;
+    display: none;
+  }
+
+  /* doubled class beats the later-in-file .lv-demo-btn base rule */
+  .lv-demo-top.lv-demo-top {
+    display: inline-flex;
+    top: 24px;
+    right: 16px;
+    padding: 6px 13px;
+    font-size: 12.5px;
   }
 
   .lv-subscribe {

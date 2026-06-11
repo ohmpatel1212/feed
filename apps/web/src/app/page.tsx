@@ -303,6 +303,12 @@ export default function Landing() {
             </Link>
           </div>
         </div>
+        {/* mobile-only: pinned to the hero's top-right (can't position the
+            in-row button there — the cta-row's reveal transform would
+            become its containing block) */}
+        <Link href="/curator" className="lv-demo-btn lv-demo-top">
+          Try it out &rarr;
+        </Link>
         <button className="lv-scroll-cue" onClick={keepGoing}>
           <span>keep going</span>
           <span className="arrow">&darr;</span>
