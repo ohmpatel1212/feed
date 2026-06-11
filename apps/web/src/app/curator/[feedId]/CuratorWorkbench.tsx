@@ -209,6 +209,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     hideUnavailable,
     setUnavailableCount,
     openPublish,
+    registerOpenTune,
   } = useCurator();
 
   const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
@@ -259,6 +260,16 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const ptrSpinnerRef = useRef<HTMLDivElement | null>(null);
   const ptrRefreshingRef = useRef(false);
   const [ptrRefreshing, setPtrRefreshing] = useState(false);
+
+  // Register the openTune callback so the top-bar tune icon can switch to the
+  // tune pane from outside the workbench (especially on mobile).
+  useEffect(() => {
+    registerOpenTune(() => {
+      setRightPane("tune");
+      setMobileTab("chat");
+    });
+    return () => registerOpenTune(() => {});
+  }, [registerOpenTune, setMobileTab]);
 
   // On mobile the chat input bar is always pinned at the bottom of the screen
   // (it IS the box you see over the feed). Focusing it raises the frosted
@@ -1795,6 +1806,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
             aria-label="Close chat"
             onClick={() => {
               inputRef.current?.blur();
+              setRightPane("chat");
               setMobileTab("feed");
             }}
           >

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import "./curator.css";
@@ -142,6 +142,7 @@ function CuratorShell({
   const [bskyConnecting, setBskyConnecting] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const openTuneRef = useRef<(() => void) | null>(null);
 
   async function handleShare(feed: SavedFeed) {
     const url = `${window.location.origin}/f/${feed.id}`;
@@ -347,6 +348,8 @@ function CuratorShell({
         unavailableCount,
         setUnavailableCount,
         openPublish: () => setShowPublish(true),
+        openTune: () => openTuneRef.current?.(),
+        registerOpenTune: (fn: () => void) => { openTuneRef.current = fn; },
       }}
     >
       <div className="curator-shell">
@@ -968,8 +971,42 @@ function CuratorShell({
               </Dialog>
             </div>
 
-            {/* Share — outside cur-topbar-right so it stays visible on mobile
+            {/* Tune + Publish + Share — outside cur-topbar-right so they stay visible on mobile
                 (the other topbar icons are folded away on small screens). */}
+            {activeFeed && activeHasCriteria && (
+              <button
+                type="button"
+                className="cur-topbar-icon cur-topbar-tune"
+                onClick={() => openTuneRef.current?.()}
+                title="Tune feed"
+                aria-label="Tune feed"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <line x1="4" y1="21" x2="4" y2="14" />
+                  <line x1="4" y1="10" x2="4" y2="3" />
+                  <line x1="12" y1="21" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12" y2="3" />
+                  <line x1="20" y1="21" x2="20" y2="16" />
+                  <line x1="20" y1="12" x2="20" y2="3" />
+                  <line x1="1" y1="14" x2="7" y2="14" />
+                  <line x1="9" y1="8" x2="15" y2="8" />
+                  <line x1="17" y1="16" x2="23" y2="16" />
+                </svg>
+              </button>
+            )}
+            {activeFeed && activeHasCriteria && (
+              <button
+                type="button"
+                className="cur-topbar-icon cur-topbar-publish-bsky"
+                onClick={() => setShowPublish(true)}
+                title="Publish to Bluesky"
+                aria-label="Publish to Bluesky"
+              >
+                <svg width="16" height="16" viewBox="0 0 600 530" fill="currentColor" aria-hidden>
+                  <path d="M135.72 44.03C202.216 93.951 273.74 195.86 300 249.97c26.26-54.11 97.784-156.019 164.28-205.94C512.26 8.009 590-19.862 590 68.825c0 17.712-10.155 148.79-16.111 170.07-20.703 73.984-96.144 92.854-163.25 81.433 117.3 19.964 147.14 86.092 82.697 152.22-122.39 125.59-175.91-31.511-189.63-71.766-2.514-7.38-3.69-10.832-3.706-7.905-.017-2.927-1.192.525-3.706 7.905-13.72 40.255-67.24 197.356-189.63 71.766-64.444-66.128-34.604-132.256 82.697-152.22-67.106 11.421-142.547-7.449-163.25-81.433C20.155 217.615 10 86.537 10 68.825c0-88.687 77.74-60.816 125.72-24.795z" />
+                </svg>
+              </button>
+            )}
             {activeFeed && activeHasCriteria && (
               <button
                 type="button"
