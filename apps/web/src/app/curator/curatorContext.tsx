@@ -40,6 +40,8 @@ export interface CuratorContextValue {
   unavailableCount: number;
   setUnavailableCount: (n: number) => void;
   openPublish: () => void;
+  openTune: () => void;
+  registerOpenTune: (fn: () => void) => void;
 }
 
 const CuratorContext = createContext<CuratorContextValue | null>(null);

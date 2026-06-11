@@ -209,6 +209,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     hideUnavailable,
     setUnavailableCount,
     openPublish,
+    registerOpenTune,
   } = useCurator();
 
   const [rightPane, setRightPane] = useState<"chat" | "tune">("chat");
@@ -259,6 +260,16 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
   const ptrSpinnerRef = useRef<HTMLDivElement | null>(null);
   const ptrRefreshingRef = useRef(false);
   const [ptrRefreshing, setPtrRefreshing] = useState(false);
+
+  // Register the openTune callback so the top-bar tune icon can switch to the
+  // tune pane from outside the workbench (especially on mobile).
+  useEffect(() => {
+    registerOpenTune(() => {
+      setRightPane("tune");
+      setMobileTab("chat");
+    });
+    return () => registerOpenTune(() => {});
+  }, [registerOpenTune, setMobileTab]);
 
   // On mobile the chat input bar is always pinned at the bottom of the screen
   // (it IS the box you see over the feed). Focusing it raises the frosted
@@ -328,11 +339,9 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
 
   // Bluesky like state: uri → { liked, likeUri, pending }
   const [likeState, setLikeState] = useState<Record<string, { liked: boolean; likeUri?: string; pending: boolean }>>({});
-  const [engagePending, setEngagePending] = useState<
-    Record<string, Partial<Record<"reply" | "repost" | "quote", boolean>>>
-  >({});
+  const [repostState, setRepostState] = useState<Record<string, { reposted: boolean; repostUri?: string; pending: boolean }>>({});
   const [countDelta, setCountDelta] = useState<
-    Record<string, { replies?: number; reposts?: number; quotes?: number }>
+    Record<string, { replies?: number; quotes?: number }>
   >({});
   const [composer, setComposer] = useState<{ uri: string; kind: "reply" | "quote" } | null>(null);
   const [composerText, setComposerText] = useState("");
@@ -349,22 +358,35 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
     return true;
   }
 
-  async function handleRepost(postUri: string) {
+  async function toggleRepost(postUri: string, currentlyReposted: boolean, currentRepostUri?: string) {
     if (!ensureBskyAuth()) return;
-    setEngagePending((s) => ({ ...s, [postUri]: { ...s[postUri], repost: true } }));
+    const prev = repostState[postUri];
+    // Optimistic update
+    setRepostState((s) => ({
+      ...s,
+      [postUri]: { reposted: !currentlyReposted, repostUri: currentlyReposted ? undefined : currentRepostUri, pending: true },
+    }));
     try {
       const res = await authedFetch("/api/bsky/repost", {
         method: "POST",
-        body: JSON.stringify({ uri: postUri }),
+        body: JSON.stringify({
+          uri: postUri,
+          action: currentlyReposted ? "unrepost" : "repost",
+          ...(currentlyReposted && currentRepostUri ? { repostUri: currentRepostUri } : {}),
+        }),
       });
       if (res.ok) {
-        setCountDelta((s) => ({
+        const data = await res.json();
+        setRepostState((s) => ({
           ...s,
-          [postUri]: { ...s[postUri], reposts: (s[postUri]?.reposts ?? 0) + 1 },
+          [postUri]: { reposted: !currentlyReposted, repostUri: data.repostUri, pending: false },
         }));
+      } else {
+        // Revert on failure
+        setRepostState((s) => ({ ...s, [postUri]: prev ?? { reposted: currentlyReposted, repostUri: currentRepostUri, pending: false } }));
       }
-    } finally {
-      setEngagePending((s) => ({ ...s, [postUri]: { ...s[postUri], repost: false } }));
+    } catch {
+      setRepostState((s) => ({ ...s, [postUri]: prev ?? { reposted: currentlyReposted, repostUri: currentRepostUri, pending: false } }));
     }
   }
 
@@ -475,7 +497,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           type="button"
           className="cur-post-stat cur-post-engage-btn"
           title="Reply"
-          disabled={engagePending[post.uri]?.reply}
           onClick={() => openComposer(post.uri, "reply")}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -485,10 +506,10 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
         </button>
         <button
           type="button"
-          className={`cur-post-stat cur-post-engage-btn${(countDelta[post.uri]?.reposts ?? 0) > 0 ? " cur-post-reposted" : ""}`}
-          title="Repost"
-          disabled={engagePending[post.uri]?.repost}
-          onClick={() => handleRepost(post.uri)}
+          className={`cur-post-stat cur-post-engage-btn${repostState[post.uri]?.reposted ? " cur-post-reposted" : ""}`}
+          title={repostState[post.uri]?.reposted ? "Undo repost" : "Repost"}
+          disabled={repostState[post.uri]?.pending}
+          onClick={() => toggleRepost(post.uri, !!repostState[post.uri]?.reposted, repostState[post.uri]?.repostUri)}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <polyline points="17 1 21 5 17 9" />
@@ -496,7 +517,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
             <polyline points="7 23 3 19 7 15" />
             <path d="M21 13v2a4 4 0 0 1-4 4H3" />
           </svg>
-          {formatCount(post.repost_count + (countDelta[post.uri]?.reposts ?? 0))}
+          {formatCount(post.repost_count + (repostState[post.uri]?.reposted ? 1 : 0))}
         </button>
         <button
           type="button"
@@ -514,7 +535,6 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
           type="button"
           className="cur-post-stat cur-post-engage-btn"
           title="Quote"
-          disabled={engagePending[post.uri]?.quote}
           onClick={() => openComposer(post.uri, "quote")}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -1795,6 +1815,7 @@ export default function CuratorWorkbench({ feedId }: { feedId: number }) {
             aria-label="Close chat"
             onClick={() => {
               inputRef.current?.blur();
+              setRightPane("chat");
               setMobileTab("feed");
             }}
           >
