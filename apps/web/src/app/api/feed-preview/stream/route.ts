@@ -33,8 +33,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // ?refresh=1 forces a fresh recompute and overwrites the cached result.
-  // Any other load is cache-eligible (served if <1h old, see getFeedPreviewPosts).
+  // ?refresh=1 forces a fresh recompute and overwrites the cached snapshot.
+  // Any other load is cache-eligible (served if <24h old, see getFeedPreviewPosts).
   const forceFresh = req.nextUrl.searchParams.get("refresh") === "1";
 
   const feed = await getFeedForUser(feedId, auth.userId);
