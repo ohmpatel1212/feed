@@ -76,7 +76,19 @@ export interface PreviewStageEvent {
 // The preview pipeline is slow + token-costly, so we cache its final post list
 // per feed in feed-db (`feed_result_cache`) and reuse it while fresh. See
 // DECISIONS.md for the TTL / invalidation rationale.
-const FEED_CACHE_TTL = "1 hour"; // Postgres interval literal.
+const FEED_CACHE_TTL = "24 hours"; // Postgres interval literal.
+
+// Snapshot depth: every compute stores this many reranked posts as the feed's
+// canonical snapshot. The curator preview shows the first 25; the skeleton
+// xrpc paginates the full list (Bluesky app pages 30 at a time).
+export const SNAPSHOT_LIMIT = 50;
+
+/**
+ * The Anthropic rerank call failed. Callers must not substitute vector-order
+ * results: the curator preview surfaces the error, the skeleton serves an
+ * empty page, and nothing is cached — the next request retries.
+ */
+export class RerankUnavailableError extends Error {}
 
 // Stable JSON: object keys sorted recursively so semantically-equal configs
 // (keys in a different order) hash identically and don't cause false misses.
@@ -93,9 +105,9 @@ function stableStringify(value: unknown): string {
 }
 
 // Digest of only the fields that change search results. Any feed edit that
-// touches these → different hash → cache miss → recompute. `limit` is included
-// so a slice-size change can't serve a wrongly-sized cached list.
-function computeFeedConfigHash(feed: DbFeed, limit: number): string {
+// touches these → different hash → cache miss → recompute. The snapshot depth
+// is fixed (SNAPSHOT_LIMIT), so the caller's slice size doesn't participate.
+function computeFeedConfigHash(feed: DbFeed): string {
   return createHash("sha256")
     .update(
       stableStringify({
@@ -105,7 +117,6 @@ function computeFeedConfigHash(feed: DbFeed, limit: number): string {
         rerank_prompt: feed.rerank_prompt,
         rerank_model: feed.rerank_model,
         rerank_thinking_enabled: feed.rerank_thinking_enabled,
-        limit,
       })
     )
     .digest("hex");
@@ -115,7 +126,7 @@ export async function getFeedPreviewPosts(
   feedId: number,
   limit: number = 25,
   onStage?: (e: PreviewStageEvent) => void,
-  opts?: { forceFresh?: boolean; skipRerank?: boolean }
+  opts?: { forceFresh?: boolean }
 ): Promise<FeedPreviewPost[]> {
   const t0 = performance.now();
   const feedRes = await query("SELECT * FROM feeds WHERE id = $1", [feedId]);
@@ -123,12 +134,29 @@ export async function getFeedPreviewPosts(
   const feed = rowToFeed(feedRes.rows[0]);
   const tFeed = performance.now();
 
+  const configHash = computeFeedConfigHash(feed);
+
   if (feed.subqueries.length === 0) {
     onStage?.({ stage: "done" });
+    // Write an empty snapshot row (best-effort). Without it, a published
+    // feed whose subqueries were later emptied has no cache row at all and
+    // sorts first (NULLS FIRST) in the refresh cron's queue, occupying a
+    // slot every single run.
+    try {
+      await query(
+        `INSERT INTO feed_result_cache (feed_id, config_hash, posts, cached_at)
+         VALUES ($1, $2, '[]'::jsonb, now())
+         ON CONFLICT (feed_id) DO UPDATE SET
+           config_hash = EXCLUDED.config_hash,
+           posts = EXCLUDED.posts,
+           cached_at = now()`,
+        [feedId, configHash]
+      );
+    } catch {
+      /* best-effort */
+    }
     return [];
   }
-
-  const configHash = computeFeedConfigHash(feed, limit);
 
   // Cache read: serve the stored posts when the row is fresh and the config
   // hasn't changed. Refresh (forceFresh) skips this and recomputes below.
@@ -148,7 +176,7 @@ export async function getFeedPreviewPosts(
             `feed-lookup=${(tFeed - t0).toFixed(0)}ms ` +
             `total=${(performance.now() - t0).toFixed(0)}ms`
         );
-        return posts;
+        return posts.slice(0, limit);
       }
     } catch (e) {
       // A cache read failure must never break the preview — fall through to a
@@ -164,8 +192,7 @@ export async function getFeedPreviewPosts(
   onStage?.({ stage: "searching" });
 
   try {
-    const willRerank =
-      !opts?.skipRerank && feed.rerank_prompt.trim().length > 0;
+    const willRerank = feed.rerank_prompt.trim().length > 0;
     const hits = await searchPosts({
       subqueries: feed.subqueries,
       totalBudget: feed.candidate_budget,
@@ -195,7 +222,7 @@ export async function getFeedPreviewPosts(
           // intents at once without needing rewrites.
           query: feed.subqueries.join(" | "),
           candidates: hits,
-          topK: limit,
+          topK: SNAPSHOT_LIMIT,
           systemPrompt: feed.rerank_prompt,
           model: feed.rerank_model,
           thinkingEnabled: feed.rerank_thinking_enabled,
@@ -224,16 +251,13 @@ export async function getFeedPreviewPosts(
           orderedHits.push(hits[k.i]);
         }
       } catch (e) {
-        // Reranker failure → fall back to vector order. Surface raw hits
-        // rather than fail the whole preview.
-        console.warn(
-          "[rerank] failed, falling back to vector order:",
-          e instanceof Error ? e.message : String(e)
-        );
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[rerank] failed:", msg);
+        throw new RerankUnavailableError(`rerank failed: ${msg}`);
       }
     }
 
-    const sliced = orderedHits.slice(0, limit);
+    const sliced = orderedHits.slice(0, SNAPSHOT_LIMIT);
     console.log(
       `[timing] getFeedPreviewPosts feed-lookup=${(tFeed - t0).toFixed(0)}ms ` +
         `searchPosts=${(tSearch - tFeed).toFixed(0)}ms ` +
@@ -280,7 +304,9 @@ export async function getFeedPreviewPosts(
       };
     });
 
-    // Cache write (best-effort): store the fresh result for the next view.
+    // Cache write (best-effort): store the fresh snapshot for the next view.
+    // Only reached when the rerank (if configured) succeeded — a failed
+    // rerank throws above, keeping the previous good snapshot in place.
     // A write failure must never fail the response, so we swallow + log.
     try {
       await query(
@@ -299,8 +325,9 @@ export async function getFeedPreviewPosts(
       );
     }
 
-    return result;
+    return result.slice(0, limit);
   } catch (e) {
+    if (e instanceof RerankUnavailableError) throw e;
     console.warn(
       "[vector-search] search failed:",
       e instanceof Error ? e.message : String(e)
@@ -310,94 +337,140 @@ export async function getFeedPreviewPosts(
 }
 
 // --- Public feed skeleton (xrpc) ---
-// Posts for the public feed skeleton xrpc (uses preview pipeline + cache).
-const SKELETON_STOCK_LIMIT = 100;
+// The skeleton serves the feed's snapshot (one row in feed_result_cache,
+// regardless of TTL/config-hash — any reranked snapshot beats recomputing
+// under the reader's spinner). Freshness is the Cloud Scheduler job's work
+// (POST /api/internal/refresh-feeds), plus curator previews and publish
+// warming.
 
-async function readAnyFeedCachePosts(
-  feedId: number
-): Promise<FeedPreviewPost[] | null> {
+interface FeedSnapshot {
+  posts: FeedPreviewPost[];
+  // Epoch ms of cached_at — identifies this snapshot generation in cursors.
+  version: number;
+}
+
+// Returns null only when the row is truly missing (or unreadable). A row
+// holding zero posts is a VALID empty snapshot — a feed whose subqueries
+// matched nothing — and must not be conflated with a broken precompute.
+async function readFeedSnapshot(feedId: number): Promise<FeedSnapshot | null> {
   try {
     const res = await query(
-      `SELECT posts FROM feed_result_cache WHERE feed_id = $1 LIMIT 1`,
+      `SELECT posts, cached_at FROM feed_result_cache WHERE feed_id = $1`,
       [feedId]
     );
     if (res.rows.length === 0) return null;
     const posts = res.rows[0].posts as FeedPreviewPost[];
-    return Array.isArray(posts) && posts.length > 0 ? posts : null;
-  } catch {
+    return {
+      posts: Array.isArray(posts) ? posts : [],
+      version: new Date(res.rows[0].cached_at).getTime(),
+    };
+  } catch (e) {
+    console.warn(
+      `[skeleton] cache read failed feedId=${feedId}:`,
+      e instanceof Error ? e.message : String(e)
+    );
     return null;
   }
 }
 
-function paginateSkeletonPosts(
-  posts: FeedPreviewPost[],
-  limit: number,
-  cursor?: string
-): { uri: string; indexed_at: string }[] {
-  let filtered = posts;
-  if (cursor) {
-    filtered = posts.filter((p) => p.indexed_at < cursor);
-  }
-  return filtered.slice(0, limit).map((p) => ({
-    uri: p.uri,
-    indexed_at: p.indexed_at,
-  }));
+export interface SkeletonPage {
+  uris: string[];
+  cursor?: string;
 }
 
-export async function getFeedSkeletonPosts(
+// Cursor format: "<snapshotVersion>::<offset>" — a position in a specific
+// snapshot generation, not a timestamp. Our order is rerank order, so
+// timestamp cursors (the chronological-feed convention) don't apply; an
+// offset into a pinned list gives exact pages with no same-timestamp skips.
+// If the snapshot rotated mid-scroll (version mismatch) we resume at the
+// same offset in the new snapshot — at worst one post repeats or is skipped
+// at the page boundary, once per daily refresh. Unparseable cursors (e.g.
+// pre-deploy timestamp cursors) restart from the top.
+function paginateSnapshot(
+  snapshot: FeedSnapshot,
+  limit: number,
+  cursor?: string
+): SkeletonPage {
+  let offset = 0;
+  if (cursor) {
+    const m = cursor.match(/^(\d+)::(\d+)$/);
+    if (m) offset = Number(m[2]);
+  }
+  const page = snapshot.posts.slice(offset, offset + limit);
+  const end = offset + page.length;
+  return {
+    uris: page.map((p) => p.uri),
+    cursor:
+      end < snapshot.posts.length ? `${snapshot.version}::${end}` : undefined,
+  };
+}
+
+// Published feeds are PRECOMPUTED — the skeleton never runs the pipeline
+// under a reader's request. The snapshot row is written by curator previews,
+// publish-time warming, and the 6-hourly refresh cron (whose staleness query
+// also backfills missing rows). A missing row here means all three failed —
+// log loudly and serve an empty feed until the cron heals it.
+export async function getFeedSkeletonPage(
   feedId: number,
   limit: number,
   cursor?: string
-): Promise<{ uri: string; indexed_at: string }[]> {
+): Promise<SkeletonPage> {
   const t0 = performance.now();
 
-  // Bluesky times out around ~3s. Serve any cached posts immediately — even
-  // if the curator warmed a different limit/hash — rather than blocking on
-  // vector search + rerank.
-  const cached = await readAnyFeedCachePosts(feedId);
-  if (cached) {
-    console.log(
-      `[skeleton] cache hit feedId=${feedId} posts=${cached.length} ` +
-        `total=${(performance.now() - t0).toFixed(0)}ms`
+  const cached = await readFeedSnapshot(feedId);
+  if (!cached) {
+    console.error(
+      `[skeleton] NO SNAPSHOT for published feedId=${feedId} — ` +
+        `precompute invariant broken (warm failed + never previewed?); ` +
+        `serving empty until the refresh cron backfills`
     );
-    return paginateSkeletonPosts(cached, limit, cursor);
+    return { uris: [] };
   }
-
-  // Cold path: vector order only (no LLM rerank) to stay within Bluesky's timeout.
-  const posts = await getFeedPreviewPosts(
-    feedId,
-    SKELETON_STOCK_LIMIT,
-    undefined,
-    { skipRerank: true }
-  );
   console.log(
-    `[skeleton] cold compute feedId=${feedId} posts=${posts.length} ` +
+    `[skeleton] cache hit feedId=${feedId} posts=${cached.posts.length} ` +
       `total=${(performance.now() - t0).toFixed(0)}ms`
   );
-  return paginateSkeletonPosts(posts, limit, cursor);
+  return paginateSnapshot(cached, limit, cursor);
 }
 
 /**
- * Full post objects for the public share page (/f/[feedId]). Serves whatever
- * is cached; cold path mirrors the skeleton xrpc (vector order, no LLM rerank)
- * so an anonymous visit can't burn rerank tokens.
+ * Full post objects for the public share page (/f/[feedId]). Snapshot-only,
+ * like the skeleton: anonymous traffic must never trigger pipeline spend.
  */
 export async function getSharedFeedPosts(
   feedId: number,
   limit = 30
 ): Promise<FeedPreviewPost[]> {
-  const cached = await readAnyFeedCachePosts(feedId);
-  if (cached) return cached.slice(0, limit);
-  return getFeedPreviewPosts(feedId, limit, undefined, { skipRerank: true });
+  const cached = await readFeedSnapshot(feedId);
+  return cached ? cached.posts.slice(0, limit) : [];
 }
 
-/** Pre-warm skeleton cache after publish so Bluesky's first fetch succeeds. */
-export async function warmFeedSkeletonCache(feedId: number): Promise<number> {
-  const posts = await getFeedPreviewPosts(
-    feedId,
-    SKELETON_STOCK_LIMIT,
-    undefined,
-    { skipRerank: true }
-  );
-  return posts.length;
+/**
+ * Publishing requires a snapshot computed from the feed's CURRENT config with
+ * at least one post — the user must have seen a non-empty preview of what
+ * they're publishing. (After publish they can edit freely; the refresh cron
+ * recomputes within 24h.)
+ */
+export type PublishSnapshotState = "ready" | "missing" | "stale_config" | "empty";
+
+export async function getPublishSnapshotState(
+  feed: DbFeed
+): Promise<PublishSnapshotState> {
+  try {
+    const res = await query(
+      `SELECT config_hash, posts FROM feed_result_cache WHERE feed_id = $1`,
+      [feed.id]
+    );
+    if (res.rows.length === 0) return "missing";
+    if (res.rows[0].config_hash !== computeFeedConfigHash(feed)) {
+      return "stale_config";
+    }
+    const posts = res.rows[0].posts as FeedPreviewPost[];
+    if (!Array.isArray(posts) || posts.length === 0) return "empty";
+    return "ready";
+  } catch {
+    // A transient read failure blocks publish (retryable) rather than
+    // letting an unverified feed through.
+    return "missing";
+  }
 }
